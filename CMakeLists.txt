@@ -4,7 +4,7 @@ project(nccl_rdma_test LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(CUDA REQUIRED)
+find_package(CUDAToolkit REQUIRED)
 
 include(CheckCXXCompilerFlag)
 CHECK_CXX_COMPILER_FLAG("-Wno-deprecated-declarations" HAS_NODEP_WARN)
@@ -25,7 +25,7 @@ message(STATUS "Found NCCL include: ${NCCL_INCLUDE_DIR}")
 message(STATUS "Found NCCL lib: ${NCCL_LIBRARY}")
 
 add_executable(nccl_rdma_test src/main.cpp)
-target_include_directories(nccl_rdma_test PRIVATE ${NCCL_INCLUDE_DIR} ${CUDA_INCLUDE_DIRS})
-target_link_libraries(nccl_rdma_test PRIVATE ${NCCL_LIBRARY} cuda cudart)
+target_include_directories(nccl_rdma_test PRIVATE ${NCCL_INCLUDE_DIR} ${CUDAToolkit_INCLUDE_DIRS})
+target_link_libraries(nccl_rdma_test PRIVATE ${NCCL_LIBRARY} CUDA::cudart)
 
 
