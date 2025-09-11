@@ -28,4 +28,7 @@ add_executable(nccl_rdma_test src/main.cpp)
 target_include_directories(nccl_rdma_test PRIVATE ${NCCL_INCLUDE_DIR} ${CUDAToolkit_INCLUDE_DIRS})
 target_link_libraries(nccl_rdma_test PRIVATE ${NCCL_LIBRARY} CUDA::cudart)
 
+# Prefer system lib directory containing newer NCCL at runtime
+set_target_properties(nccl_rdma_test PROPERTIES BUILD_RPATH "/usr/lib/x86_64-linux-gnu")
+
 
