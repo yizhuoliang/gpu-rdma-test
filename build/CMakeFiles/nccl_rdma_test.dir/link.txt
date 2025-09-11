@@ -1,0 +1,1 @@
+/usr/bin/c++ CMakeFiles/nccl_rdma_test.dir/src/main.cpp.o -o nccl_rdma_test  /usr/lib/x86_64-linux-gnu/libnccl.so -lcuda -lcudart 
