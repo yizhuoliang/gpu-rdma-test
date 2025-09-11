@@ -1,3 +1,0 @@
-/home/yliang/gpu-test/build/CMakeFiles/nccl_rdma_test.dir
-/home/yliang/gpu-test/build/CMakeFiles/edit_cache.dir
-/home/yliang/gpu-test/build/CMakeFiles/rebuild_cache.dir
