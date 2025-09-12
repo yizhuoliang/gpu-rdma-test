@@ -11,6 +11,12 @@
 #include <string>
 #include <vector>
 
+// Baked-in IPs and parameters for this test environment
+#define SERVER_IP "10.10.2.1"
+#define CLIENT_IP "10.10.2.2"
+#define TEST_PORT 50051
+#define TEST_NUM_FLOATS ((size_t)((256ULL * 1024ULL * 1024ULL) / sizeof(float)))
+
 static void throwOnCudaError(cudaError_t status, const char* msg) {
     if (status != cudaSuccess) {
         std::cerr << msg << ": " << cudaGetErrorString(status) << std::endl;
@@ -167,15 +173,12 @@ int runClient(const std::string& serverIp, int port, size_t numFloats) {
 }
 
 int main(int argc, char** argv) {
-    if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " server <bind_ip> [port] [num_floats]" << std::endl;
-        std::cerr << "   or: " << argv[0] << " client <server_ip> [port] [num_floats]" << std::endl;
+    if (argc != 2) {
+        std::cerr << "Usage: " << argv[0] << " server|client" << std::endl;
         return 1;
     }
 
     std::string mode = argv[1];
-    int port = (argc >= 4) ? std::atoi(argv[3]) : 50051;
-    size_t numFloats = (argc >= 5) ? static_cast<size_t>(std::atoll(argv[4])) : (256 * 1024 * 1024) / sizeof(float); // 256 MB default
 
     // NCCL tuning for IB/RoCE
     setenv("NCCL_DEBUG", "INFO", 0);
@@ -185,13 +188,9 @@ int main(int argc, char** argv) {
     setenv("NCCL_IB_DISABLE", "0", 0);
 
     if (mode == "server") {
-        if (argc < 3) { std::cerr << "server mode requires <bind_ip>" << std::endl; return 1; }
-        std::string bindIp = argv[2];
-        return runServer(bindIp, port, numFloats);
+        return runServer(SERVER_IP, TEST_PORT, TEST_NUM_FLOATS);
     } else if (mode == "client") {
-        if (argc < 3) { std::cerr << "client mode requires <server_ip>" << std::endl; return 1; }
-        std::string serverIp = argv[2];
-        return runClient(serverIp, port, numFloats);
+        return runClient(SERVER_IP, TEST_PORT, TEST_NUM_FLOATS);
     } else {
         std::cerr << "Unknown mode: " << mode << std::endl; return 1;
     }
