@@ -46,16 +46,24 @@ double runZmqRoundtrip(size_t numBytes, bool isServer) {
     }
 
     std::vector<uint8_t> payload(numBytes, 0x5A);
-    zmq::message_t msg_send(payload.data(), payload.size());
     zmq::message_t msg_recv;
 
-    auto t0 = clock_type::now();
+    // Warmup (untimed) round
     if (!isServer) {
-        sock.send(msg_send, zmq::send_flags::none);
+        sock.send(zmq::buffer(payload), zmq::send_flags::none);
         sock.recv(msg_recv, zmq::recv_flags::none);
     } else {
         sock.recv(msg_recv, zmq::recv_flags::none);
-        sock.send(msg_send, zmq::send_flags::none);
+        sock.send(zmq::buffer(payload), zmq::send_flags::none);
+    }
+
+    auto t0 = clock_type::now();
+    if (!isServer) {
+        sock.send(zmq::buffer(payload), zmq::send_flags::none);
+        sock.recv(msg_recv, zmq::recv_flags::none);
+    } else {
+        sock.recv(msg_recv, zmq::recv_flags::none);
+        sock.send(zmq::buffer(payload), zmq::send_flags::none);
     }
     auto t1 = clock_type::now();
     return std::chrono::duration<double, std::micro>(t1 - t0).count();
@@ -117,6 +125,18 @@ double runNcclCpuGpuRoundtrip(size_t numBytes, bool isServer) {
     ncclComm_t comm{};
     throwOnNcclError(ncclCommInitRank(&comm, 2, id, rank), "ncclCommInitRank");
     cudaStream_t stream; throwOnCudaError(cudaStreamCreate(&stream), "stream");
+
+    // Warmup (untimed) round
+    throwOnNcclError(ncclGroupStart(), "warmup group start");
+    if (isServer) {
+        throwOnNcclError(ncclSend(d_send, numFloats, ncclFloat, 1, comm, stream), "warmup send");
+        throwOnNcclError(ncclRecv(d_recv, numFloats, ncclFloat, 1, comm, stream), "warmup recv");
+    } else {
+        throwOnNcclError(ncclRecv(d_recv, numFloats, ncclFloat, 0, comm, stream), "warmup recv");
+        throwOnNcclError(ncclSend(d_send, numFloats, ncclFloat, 0, comm, stream), "warmup send");
+    }
+    throwOnNcclError(ncclGroupEnd(), "warmup group end");
+    throwOnCudaError(cudaStreamSynchronize(stream), "warmup sync");
 
     auto t0 = clock_type::now();
     throwOnNcclError(ncclGroupStart(), "group start");
