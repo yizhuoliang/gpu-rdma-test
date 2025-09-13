@@ -17,12 +17,13 @@ def main(csv_path: str):
         print(f"CSV missing required columns: {required_cols}")
         sys.exit(1)
 
-    sizes = [1024, 1024 * 1024 * 1024]
-    titles = {1024: "1KB", 1024 * 1024 * 1024: "1GB"}
+    sizes = [512, 1024, 2048, 4096, 8192, 16384, 1024 * 1024 * 1024]
+    titles = {512: "0.5KB", 1024: "1KB", 2048: "2KB", 4096: "4KB", 8192: "8KB", 16384: "16KB", 1024 * 1024 * 1024: "1GB"}
 
     # Use the latest entry per (size, pattern, round) in case CSV has multiple runs appended
     df = df.sort_index()  # original order; tail selection uses last occurrence
 
+    # Per-size bar charts
     for size in sizes:
         sub = df[df["size_bytes"] == size]
         if sub.empty:
@@ -54,6 +55,40 @@ def main(csv_path: str):
         out_name = f"hist_{titles[size].lower()}.png"
         plt.savefig(out_name, dpi=150)
         print(f"Saved {out_name}")
+
+    # Combined figure: subplots for all sizes in one PNG
+    cols = 3
+    rows = int(np.ceil(len(sizes) / cols))
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 4.5, rows * 3.2))
+    axes = np.array(axes).reshape(-1)
+    for idx, size in enumerate(sizes):
+        ax = axes[idx]
+        sub = df[df["size_bytes"] == size]
+        labels = []
+        values = []
+        colors = []
+        color_map = {"ZMQ": "tab:blue", "NCCL": "tab:orange"}
+        for pattern in ["ZMQ", "NCCL"]:
+            for r in [1, 2, 3]:
+                sel = sub[(sub["pattern"] == pattern) & (sub["round"] == r)]
+                if sel.empty:
+                    continue
+                val = float(sel.iloc[-1]["latency_usec"])
+                labels.append(f"{pattern}-{r}")
+                values.append(val)
+                colors.append(color_map.get(pattern, "gray"))
+        x = np.arange(len(values))
+        ax.bar(x, values, color=colors)
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, rotation=0, fontsize=8)
+        ax.set_ylabel("usec")
+        ax.set_title(titles[size])
+    # Hide any unused axes
+    for j in range(len(sizes), len(axes)):
+        fig.delaxes(axes[j])
+    fig.tight_layout()
+    fig.savefig("hist_all_sizes.png", dpi=150)
+    print("Saved hist_all_sizes.png")
 
 
 if __name__ == "__main__":

@@ -211,28 +211,30 @@ int main(int argc, char** argv) {
 
     const std::string csvPath = "results.csv";
 
-    // ZMQ: 3 rounds for 1KB and 1GB
-    for (int i = 1; i <= 3; ++i) {
-        double us = runZmqRoundtrip(SMALL_BYTES, isServer);
-        if (isServer) std::cout << "ZMQ size=" << SMALL_BYTES << "B round=" << i << " usec=" << us << std::endl;
-        appendCsv(csvPath, SMALL_BYTES, "ZMQ", i, us);
-    }
-    for (int i = 1; i <= 3; ++i) {
-        double us = runZmqRoundtrip(LARGE_BYTES, isServer);
-        if (isServer) std::cout << "ZMQ size=" << LARGE_BYTES << "B round=" << i << " usec=" << us << std::endl;
-        appendCsv(csvPath, LARGE_BYTES, "ZMQ", i, us);
-    }
+    // Sizes (bytes): 0.5KB, 1KB, 2KB, 4KB, 8KB, 16KB, 1GB
+    const std::vector<size_t> sizes = {
+        512ULL,
+        1024ULL,
+        2048ULL,
+        4096ULL,
+        8192ULL,
+        16384ULL,
+        1073741824ULL
+    };
 
-    // NCCL: 3 rounds for 1KB and 1GB
-    for (int i = 1; i <= 3; ++i) {
-        double us = runNcclCpuGpuRoundtrip(SMALL_BYTES, isServer);
-        if (isServer) std::cout << "NCCL size=" << SMALL_BYTES << "B round=" << i << " usec=" << us << std::endl;
-        appendCsv(csvPath, SMALL_BYTES, "NCCL", i, us);
-    }
-    for (int i = 1; i <= 3; ++i) {
-        double us = runNcclCpuGpuRoundtrip(LARGE_BYTES, isServer);
-        if (isServer) std::cout << "NCCL size=" << LARGE_BYTES << "B round=" << i << " usec=" << us << std::endl;
-        appendCsv(csvPath, LARGE_BYTES, "NCCL", i, us);
+    for (size_t sz : sizes) {
+        // ZMQ: 3 rounds
+        for (int i = 1; i <= 3; ++i) {
+            double us = runZmqRoundtrip(sz, isServer);
+            if (isServer) std::cout << "ZMQ size=" << sz << "B round=" << i << " usec=" << us << std::endl;
+            appendCsv(csvPath, sz, "ZMQ", i, us);
+        }
+        // NCCL: 3 rounds
+        for (int i = 1; i <= 3; ++i) {
+            double us = runNcclCpuGpuRoundtrip(sz, isServer);
+            if (isServer) std::cout << "NCCL size=" << sz << "B round=" << i << " usec=" << us << std::endl;
+            appendCsv(csvPath, sz, "NCCL", i, us);
+        }
     }
 
     return 0;
