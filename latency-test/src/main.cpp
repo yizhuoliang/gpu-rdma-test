@@ -139,23 +139,54 @@ double runNcclCpuGpuRoundtrip(size_t numBytes, bool isServer) {
     throwOnNcclError(ncclGroupEnd(), "warmup group end");
     throwOnCudaError(cudaStreamSynchronize(stream), "warmup sync");
 
+    // Timed section includes cudaMalloc, H2D before send, NCCL transfer, and D2H after recv
+    float* d_send_t = nullptr; float* d_recv_t = nullptr;
+    std::vector<float> h_send_t(numFloats, 2.0f);
+    std::vector<float> h_recv_t(numFloats);
+
     auto t0 = clock_type::now();
-    throwOnNcclError(ncclGroupStart(), "group start");
+    // Allocate device buffers (counted)
+    throwOnCudaError(cudaMalloc(&d_send_t, numFloats * sizeof(float)), "cudaMalloc timed send");
+    throwOnCudaError(cudaMalloc(&d_recv_t, numFloats * sizeof(float)), "cudaMalloc timed recv");
+
+    // Host to device before network (counted)
+    throwOnCudaError(cudaMemcpyAsync(d_send_t, h_send_t.data(), numFloats * sizeof(float), cudaMemcpyHostToDevice, stream), "H2D timed");
+
     if (isServer) {
-        throwOnNcclError(ncclSend(d_send, numFloats, ncclFloat, 1, comm, stream), "send");
-        throwOnNcclError(ncclRecv(d_recv, numFloats, ncclFloat, 1, comm, stream), "recv");
+        // Phase 1: server sends to client
+        throwOnNcclError(ncclGroupStart(), "group start phase1");
+        throwOnNcclError(ncclSend(d_send_t, numFloats, ncclFloat, 1, comm, stream), "send phase1");
+        throwOnNcclError(ncclGroupEnd(), "group end phase1");
+
+        // Phase 2: server receives from client
+        throwOnNcclError(ncclGroupStart(), "group start phase2");
+        throwOnNcclError(ncclRecv(d_recv_t, numFloats, ncclFloat, 1, comm, stream), "recv phase2");
+        throwOnNcclError(ncclGroupEnd(), "group end phase2");
+
+        // Device to host after network (counted)
+        throwOnCudaError(cudaMemcpyAsync(h_recv_t.data(), d_recv_t, numFloats * sizeof(float), cudaMemcpyDeviceToHost, stream), "D2H timed");
     } else {
-        throwOnNcclError(ncclRecv(d_recv, numFloats, ncclFloat, 0, comm, stream), "recv");
-        throwOnNcclError(ncclSend(d_send, numFloats, ncclFloat, 0, comm, stream), "send");
+        // Phase 1: client receives from server
+        throwOnNcclError(ncclGroupStart(), "group start phase1");
+        throwOnNcclError(ncclRecv(d_recv_t, numFloats, ncclFloat, 0, comm, stream), "recv phase1");
+        throwOnNcclError(ncclGroupEnd(), "group end phase1");
+
+        // Bring to host, then echo back same payload and push to device
+        throwOnCudaError(cudaMemcpyAsync(h_recv_t.data(), d_recv_t, numFloats * sizeof(float), cudaMemcpyDeviceToHost, stream), "D2H after recv");
+        throwOnCudaError(cudaMemcpyAsync(d_send_t, h_recv_t.data(), numFloats * sizeof(float), cudaMemcpyHostToDevice, stream), "H2D before send");
+
+        // Phase 2: client sends to server
+        throwOnNcclError(ncclGroupStart(), "group start phase2");
+        throwOnNcclError(ncclSend(d_send_t, numFloats, ncclFloat, 0, comm, stream), "send phase2");
+        throwOnNcclError(ncclGroupEnd(), "group end phase2");
     }
-    throwOnNcclError(ncclGroupEnd(), "group end");
-    throwOnCudaError(cudaStreamSynchronize(stream), "sync");
+
+    throwOnCudaError(cudaStreamSynchronize(stream), "sync timed");
     auto t1 = clock_type::now();
 
     double usec = std::chrono::duration<double, std::micro>(t1 - t0).count();
 
-    std::vector<float> back(numFloats);
-    throwOnCudaError(cudaMemcpy(back.data(), d_recv, numFloats * sizeof(float), cudaMemcpyDeviceToHost), "D2H");
+    cudaFree(d_send_t); cudaFree(d_recv_t);
 
     cudaStreamDestroy(stream);
     ncclCommDestroy(comm);

@@ -3,6 +3,7 @@ import sys
 import os
 import pandas as pd
 import matplotlib.pyplot as plt
+import numpy as np
 
 
 def main(csv_path: str):
@@ -19,25 +20,38 @@ def main(csv_path: str):
     sizes = [1024, 1024 * 1024 * 1024]
     titles = {1024: "1KB", 1024 * 1024 * 1024: "1GB"}
 
+    # Use the latest entry per (size, pattern, round) in case CSV has multiple runs appended
+    df = df.sort_index()  # original order; tail selection uses last occurrence
+
     for size in sizes:
         sub = df[df["size_bytes"] == size]
         if sub.empty:
             print(f"No rows for size {size}")
             continue
 
-        plt.figure(figsize=(7, 4))
-        for pattern, color in [("ZMQ", "tab:blue"), ("NCCL", "tab:orange")]:
-            data = sub[sub["pattern"] == pattern]["latency_usec"]
-            if data.empty:
-                continue
-            plt.hist(data, bins=5, alpha=0.6, label=pattern, color=color)
+        labels = []
+        values = []
+        colors = []
+        color_map = {"ZMQ": "tab:blue", "NCCL": "tab:orange"}
 
-        plt.xlabel("Latency (usec)")
-        plt.ylabel("Count")
-        plt.title(f"Latency histogram {titles[size]}")
-        plt.legend()
-        out_name = f"hist_{titles[size].lower()}.png"
+        for pattern in ["ZMQ", "NCCL"]:
+            for r in [1, 2, 3]:
+                sel = sub[(sub["pattern"] == pattern) & (sub["round"] == r)]
+                if sel.empty:
+                    continue
+                val = float(sel.iloc[-1]["latency_usec"])  # latest
+                labels.append(f"{pattern}-{r}")
+                values.append(val)
+                colors.append(color_map.get(pattern, "gray"))
+
+        x = np.arange(len(values))
+        plt.figure(figsize=(8, 4))
+        plt.bar(x, values, color=colors)
+        plt.xticks(x, labels, rotation=0)
+        plt.ylabel("Latency (usec)")
+        plt.title(f"Latency by round {titles[size]}")
         plt.tight_layout()
+        out_name = f"hist_{titles[size].lower()}.png"
         plt.savefig(out_name, dpi=150)
         print(f"Saved {out_name}")
 
