@@ -78,7 +78,13 @@ double runNcclCpuGpuRoundtrip(size_t numBytes, bool isServer) {
     } else {
         sockaddr_in addr{}; addr.sin_family = AF_INET; addr.sin_port = htons(port);
         inet_pton(AF_INET, SERVER_IP, &addr.sin_addr);
-        if (connect(sockfd, (sockaddr*)&addr, sizeof(addr)) != 0) { perror("connect"); return -1.0; }
+        // Retry connect to tolerate server not yet listening between back-to-back tests
+        const int maxAttempts = 50; // ~5s total @ 100ms
+        int attempt = 0;
+        while (connect(sockfd, (sockaddr*)&addr, sizeof(addr)) != 0) {
+            if (++attempt >= maxAttempts) { perror("connect"); return -1.0; }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
     }
 
     size_t numFloats = numBytes / sizeof(float);
