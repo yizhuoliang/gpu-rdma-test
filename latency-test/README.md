@@ -42,7 +42,7 @@ NCCL_SOCKET_IFNAME=ibs3 NCCL_IB_HCA=mlx5 NCCL_DEBUG=INFO \
 $REPO_ROOT_PATH/latency-test/build-conda/latency_test client
 ```
 
-The server will print four round-trip latency numbers (microseconds) for 1 KB and 1 GB for both paths.
+The server will print three rounds per size and pattern. It also appends results to `results.csv` in the current working directory (created on first run) with columns: `size_bytes,pattern,round,latency_usec`.
 
 Notes:
 - If your RoCE setup needs a GID index, add `NCCL_IB_GID_INDEX=3` to both commands.
