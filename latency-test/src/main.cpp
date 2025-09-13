@@ -9,6 +9,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <fstream>
 
 #define SERVER_IP "10.10.2.1"
 #define CLIENT_IP "10.10.2.2"
@@ -167,21 +168,41 @@ int main(int argc, char** argv) {
     if (argc != 2) { std::cerr << "Usage: latency_test server|client" << std::endl; return 1; }
     bool isServer = std::string(argv[1]) == "server";
 
-    // ZMQ small
-    double zmq_small = runZmqRoundtrip(SMALL_BYTES, isServer);
-    if (isServer) std::cout << "ZMQ 1KB RT usec: " << zmq_small << std::endl;
+    auto appendCsv = [&](const std::string& csvPath, size_t sizeBytes, const char* pattern, int roundIdx, double usec) {
+        if (!isServer) return; // only server records
+        bool exists = static_cast<bool>(std::ifstream(csvPath));
+        std::ofstream ofs(csvPath, std::ios::app);
+        if (!exists) {
+            ofs << "size_bytes,pattern,round,latency_usec\n";
+        }
+        ofs << sizeBytes << "," << pattern << "," << roundIdx << "," << usec << "\n";
+    };
 
-    // ZMQ large
-    double zmq_large = runZmqRoundtrip(LARGE_BYTES, isServer);
-    if (isServer) std::cout << "ZMQ 1GB RT usec: " << zmq_large << std::endl;
+    const std::string csvPath = "results.csv";
 
-    // NCCL small via GPU path
-    double nccl_small = runNcclCpuGpuRoundtrip(SMALL_BYTES, isServer);
-    if (isServer) std::cout << "NCCL CPU->GPU->IB->GPU->CPU 1KB RT usec: " << nccl_small << std::endl;
+    // ZMQ: 3 rounds for 1KB and 1GB
+    for (int i = 1; i <= 3; ++i) {
+        double us = runZmqRoundtrip(SMALL_BYTES, isServer);
+        if (isServer) std::cout << "ZMQ size=" << SMALL_BYTES << "B round=" << i << " usec=" << us << std::endl;
+        appendCsv(csvPath, SMALL_BYTES, "ZMQ", i, us);
+    }
+    for (int i = 1; i <= 3; ++i) {
+        double us = runZmqRoundtrip(LARGE_BYTES, isServer);
+        if (isServer) std::cout << "ZMQ size=" << LARGE_BYTES << "B round=" << i << " usec=" << us << std::endl;
+        appendCsv(csvPath, LARGE_BYTES, "ZMQ", i, us);
+    }
 
-    // NCCL large via GPU path
-    double nccl_large = runNcclCpuGpuRoundtrip(LARGE_BYTES, isServer);
-    if (isServer) std::cout << "NCCL CPU->GPU->IB->GPU->CPU 1GB RT usec: " << nccl_large << std::endl;
+    // NCCL: 3 rounds for 1KB and 1GB
+    for (int i = 1; i <= 3; ++i) {
+        double us = runNcclCpuGpuRoundtrip(SMALL_BYTES, isServer);
+        if (isServer) std::cout << "NCCL size=" << SMALL_BYTES << "B round=" << i << " usec=" << us << std::endl;
+        appendCsv(csvPath, SMALL_BYTES, "NCCL", i, us);
+    }
+    for (int i = 1; i <= 3; ++i) {
+        double us = runNcclCpuGpuRoundtrip(LARGE_BYTES, isServer);
+        if (isServer) std::cout << "NCCL size=" << LARGE_BYTES << "B round=" << i << " usec=" << us << std::endl;
+        appendCsv(csvPath, LARGE_BYTES, "NCCL", i, us);
+    }
 
     return 0;
 }
