@@ -30,7 +30,7 @@ cmake --build $REPO_ROOT_PATH/latency-test/build-conda -j
 ```bash
 conda activate lattest
 export LD_LIBRARY_PATH=$CONDA_PREFIX/lib
-NCCL_SOCKET_IFNAME=ibs3 NCCL_IB_HCA=mlx5 NCCL_DEBUG=INFO \
+NCCL_SOCKET_IFNAME=ibs3 NCCL_IB_HCA=mlx5 \
 $REPO_ROOT_PATH/latency-test/build-conda/latency_test server [nocopy]
 ```
 
@@ -38,11 +38,11 @@ $REPO_ROOT_PATH/latency-test/build-conda/latency_test server [nocopy]
 ```bash
 conda activate lattest
 export LD_LIBRARY_PATH=$CONDA_PREFIX/lib
-NCCL_SOCKET_IFNAME=ibs3 NCCL_IB_HCA=mlx5 NCCL_DEBUG=INFO \
+NCCL_SOCKET_IFNAME=ibs3 NCCL_IB_HCA=mlx5 \
 $REPO_ROOT_PATH/latency-test/build-conda/latency_test client [nocopy]
 ```
 
-The server will print three rounds per size and pattern. It overwrites `results.csv` in the current working directory on each run and writes columns: `size_bytes,pattern,round,latency_usec`.
+The server will print twenty rounds per size and pattern. It overwrites `results.csv` in the current working directory on each run and writes columns: `size_bytes,pattern,round,latency_usec`.
 
 Optional flag:
 - `nocopy`: Skip host↔device cudaMemcpy operations in the NCCL path (network only).

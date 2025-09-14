@@ -111,7 +111,7 @@ double runNcclCpuGpuRoundtrip(size_t numBytes, bool isServer, bool noCopy) {
     throwOnCudaError(cudaMemset(d_recv, 0, numFloats * sizeof(float)), "Memset recv");
 
     // NCCL setup
-    setenv("NCCL_DEBUG", "WARN", 0);
+    setenv("NCCL_DEBUG", "WARN", 1);
     setenv("NCCL_SOCKET_IFNAME", "ibs3", 0);
     setenv("NCCL_IB_HCA", "mlx5", 0);
     setenv("NCCL_IB_DISABLE", "0", 0);
@@ -235,14 +235,14 @@ int main(int argc, char** argv) {
     };
 
     for (size_t sz : sizes) {
-        // ZMQ: 3 rounds
-        for (int i = 1; i <= 3; ++i) {
+        // ZMQ: 20 rounds
+        for (int i = 1; i <= 20; ++i) {
             double us = runZmqRoundtrip(sz, isServer);
             if (isServer) std::cout << "ZMQ size=" << sz << "B round=" << i << " usec=" << us << std::endl;
             appendCsv(csvPath, sz, "ZMQ", i, us);
         }
-        // NCCL: 3 rounds
-        for (int i = 1; i <= 3; ++i) {
+        // NCCL: 20 rounds
+        for (int i = 1; i <= 20; ++i) {
             double us = runNcclCpuGpuRoundtrip(sz, isServer, noCopy);
             if (isServer) std::cout << "NCCL size=" << sz << "B round=" << i << " usec=" << us << std::endl;
             appendCsv(csvPath, sz, "NCCL", i, us);

@@ -36,7 +36,7 @@ def main(csv_path: str):
         color_map = {"ZMQ": "tab:blue", "NCCL": "tab:orange"}
 
         for pattern in ["ZMQ", "NCCL"]:
-            for r in [1, 2, 3]:
+            for r in range(1, 21):
                 sel = sub[(sub["pattern"] == pattern) & (sub["round"] == r)]
                 if sel.empty:
                     continue
@@ -51,6 +51,13 @@ def main(csv_path: str):
         plt.xticks(x, labels, rotation=0)
         plt.ylabel("Latency (usec)")
         plt.title(f"Latency by round {titles[size]}")
+        # Means
+        for pattern, color in [("ZMQ", "tab:blue"), ("NCCL", "tab:orange")]:
+            pdata = sub[sub["pattern"] == pattern]["latency_usec"].astype(float)
+            if not pdata.empty:
+                mean_val = pdata.mean()
+                plt.axhline(mean_val, color=color, linestyle="--", linewidth=1.5, alpha=0.8, label=f"{pattern} mean")
+        plt.legend()
         plt.tight_layout()
         out_name = f"hist_{titles[size].lower()}.png"
         plt.savefig(out_name, dpi=150)
@@ -69,7 +76,7 @@ def main(csv_path: str):
         colors = []
         color_map = {"ZMQ": "tab:blue", "NCCL": "tab:orange"}
         for pattern in ["ZMQ", "NCCL"]:
-            for r in [1, 2, 3]:
+            for r in range(1, 21):
                 sel = sub[(sub["pattern"] == pattern) & (sub["round"] == r)]
                 if sel.empty:
                     continue
@@ -83,6 +90,12 @@ def main(csv_path: str):
         ax.set_xticklabels(labels, rotation=0, fontsize=8)
         ax.set_ylabel("usec")
         ax.set_title(titles[size])
+        # Means
+        for pattern, color in [("ZMQ", "tab:blue"), ("NCCL", "tab:orange")]:
+            pdata = sub[sub["pattern"] == pattern]["latency_usec"].astype(float)
+            if not pdata.empty:
+                mean_val = pdata.mean()
+                ax.axhline(mean_val, color=color, linestyle="--", linewidth=1.0, alpha=0.8)
     # Hide any unused axes
     for j in range(len(sizes), len(axes)):
         fig.delaxes(axes[j])
