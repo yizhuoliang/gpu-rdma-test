@@ -31,7 +31,7 @@ cmake --build $REPO_ROOT_PATH/latency-test/build-conda -j
 conda activate lattest
 export LD_LIBRARY_PATH=$CONDA_PREFIX/lib
 NCCL_SOCKET_IFNAME=ibs3 NCCL_IB_HCA=mlx5 NCCL_DEBUG=INFO \
-$REPO_ROOT_PATH/latency-test/build-conda/latency_test server
+$REPO_ROOT_PATH/latency-test/build-conda/latency_test server [nocopy]
 ```
 
 - On client host (10.10.2.2):
@@ -39,10 +39,13 @@ $REPO_ROOT_PATH/latency-test/build-conda/latency_test server
 conda activate lattest
 export LD_LIBRARY_PATH=$CONDA_PREFIX/lib
 NCCL_SOCKET_IFNAME=ibs3 NCCL_IB_HCA=mlx5 NCCL_DEBUG=INFO \
-$REPO_ROOT_PATH/latency-test/build-conda/latency_test client
+$REPO_ROOT_PATH/latency-test/build-conda/latency_test client [nocopy]
 ```
 
-The server will print three rounds per size and pattern. It also appends results to `results.csv` in the current working directory (created on first run) with columns: `size_bytes,pattern,round,latency_usec`.
+The server will print three rounds per size and pattern. It overwrites `results.csv` in the current working directory on each run and writes columns: `size_bytes,pattern,round,latency_usec`.
+
+Optional flag:
+- `nocopy`: Skip host↔device cudaMemcpy operations in the NCCL path (network only).
 
 Notes:
 - If your RoCE setup needs a GID index, add `NCCL_IB_GID_INDEX=3` to both commands.

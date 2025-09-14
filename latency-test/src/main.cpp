@@ -71,7 +71,7 @@ double runZmqRoundtrip(size_t numBytes, bool isServer) {
 }
 
 // 2 & 4: CPU->GPU->IB->GPU->CPU using NCCL send/recv and TCP rendezvous
-double runNcclCpuGpuRoundtrip(size_t numBytes, bool isServer) {
+double runNcclCpuGpuRoundtrip(size_t numBytes, bool isServer, bool noCopy) {
     int port = TEST_PORT + 1; // different port for rendezvous
     int sockfd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) { perror("socket"); return -1.0; }
@@ -105,7 +105,9 @@ double runNcclCpuGpuRoundtrip(size_t numBytes, bool isServer) {
     throwOnCudaError(cudaMalloc(&d_recv, numFloats * sizeof(float)), "cudaMalloc recv");
 
     std::vector<float> h(numFloats, 1.0f);
-    throwOnCudaError(cudaMemcpy(d_send, h.data(), numFloats * sizeof(float), cudaMemcpyHostToDevice), "H2D");
+    if (!noCopy) {
+        throwOnCudaError(cudaMemcpy(d_send, h.data(), numFloats * sizeof(float), cudaMemcpyHostToDevice), "H2D");
+    }
     throwOnCudaError(cudaMemset(d_recv, 0, numFloats * sizeof(float)), "Memset recv");
 
     // NCCL setup
@@ -150,7 +152,9 @@ double runNcclCpuGpuRoundtrip(size_t numBytes, bool isServer) {
     throwOnCudaError(cudaMalloc(&d_recv_t, numFloats * sizeof(float)), "cudaMalloc timed recv");
 
     // Host to device before network (counted)
-    throwOnCudaError(cudaMemcpyAsync(d_send_t, h_send_t.data(), numFloats * sizeof(float), cudaMemcpyHostToDevice, stream), "H2D timed");
+    if (!noCopy) {
+        throwOnCudaError(cudaMemcpyAsync(d_send_t, h_send_t.data(), numFloats * sizeof(float), cudaMemcpyHostToDevice, stream), "H2D timed");
+    }
 
     if (isServer) {
         // Phase 1: server sends to client
@@ -164,7 +168,9 @@ double runNcclCpuGpuRoundtrip(size_t numBytes, bool isServer) {
         throwOnNcclError(ncclGroupEnd(), "group end phase2");
 
         // Device to host after network (counted)
-        throwOnCudaError(cudaMemcpyAsync(h_recv_t.data(), d_recv_t, numFloats * sizeof(float), cudaMemcpyDeviceToHost, stream), "D2H timed");
+        if (!noCopy) {
+            throwOnCudaError(cudaMemcpyAsync(h_recv_t.data(), d_recv_t, numFloats * sizeof(float), cudaMemcpyDeviceToHost, stream), "D2H timed");
+        }
     } else {
         // Phase 1: client receives from server
         throwOnNcclError(ncclGroupStart(), "group start phase1");
@@ -172,10 +178,12 @@ double runNcclCpuGpuRoundtrip(size_t numBytes, bool isServer) {
         throwOnNcclError(ncclGroupEnd(), "group end phase1");
 
         // Bring to host, then echo back same payload and push to device
-        throwOnCudaError(cudaMemcpyAsync(h_recv_t.data(), d_recv_t, numFloats * sizeof(float), cudaMemcpyDeviceToHost, stream), "D2H after recv");
-        // Ensure no overlap between D2H and H2D on the client
-        throwOnCudaError(cudaStreamSynchronize(stream), "sync after D2H before H2D");
-        throwOnCudaError(cudaMemcpyAsync(d_send_t, h_recv_t.data(), numFloats * sizeof(float), cudaMemcpyHostToDevice, stream), "H2D before send");
+        if (!noCopy) {
+            throwOnCudaError(cudaMemcpyAsync(h_recv_t.data(), d_recv_t, numFloats * sizeof(float), cudaMemcpyDeviceToHost, stream), "D2H after recv");
+            // Ensure no overlap between D2H and H2D on the client
+            throwOnCudaError(cudaStreamSynchronize(stream), "sync after D2H before H2D");
+            throwOnCudaError(cudaMemcpyAsync(d_send_t, h_recv_t.data(), numFloats * sizeof(float), cudaMemcpyHostToDevice, stream), "H2D before send");
+        }
 
         // Phase 2: client sends to server
         throwOnNcclError(ncclGroupStart(), "group start phase2");
@@ -198,20 +206,22 @@ double runNcclCpuGpuRoundtrip(size_t numBytes, bool isServer) {
 }
 
 int main(int argc, char** argv) {
-    if (argc != 2) { std::cerr << "Usage: latency_test server|client" << std::endl; return 1; }
+    if (argc < 2) { std::cerr << "Usage: latency_test server|client [nocopy]" << std::endl; return 1; }
     bool isServer = std::string(argv[1]) == "server";
+    bool noCopy = (argc >= 3 && std::string(argv[2]) == "nocopy");
 
     auto appendCsv = [&](const std::string& csvPath, size_t sizeBytes, const char* pattern, int roundIdx, double usec) {
         if (!isServer) return; // only server records
-        bool exists = static_cast<bool>(std::ifstream(csvPath));
         std::ofstream ofs(csvPath, std::ios::app);
-        if (!exists) {
-            ofs << "size_bytes,pattern,round,latency_usec\n";
-        }
         ofs << sizeBytes << "," << pattern << "," << roundIdx << "," << usec << "\n";
     };
 
     const std::string csvPath = "results.csv";
+    // Truncate CSV and write header at start of each run (server only)
+    if (isServer) {
+        std::ofstream ofs(csvPath, std::ios::trunc);
+        ofs << "size_bytes,pattern,round,latency_usec\n";
+    }
 
     // Sizes (bytes): 0.5KB, 1KB, 2KB, 4KB, 8KB, 16KB, 1GB
     const std::vector<size_t> sizes = {
@@ -233,7 +243,7 @@ int main(int argc, char** argv) {
         }
         // NCCL: 3 rounds
         for (int i = 1; i <= 3; ++i) {
-            double us = runNcclCpuGpuRoundtrip(sz, isServer);
+            double us = runNcclCpuGpuRoundtrip(sz, isServer, noCopy);
             if (isServer) std::cout << "NCCL size=" << sz << "B round=" << i << " usec=" << us << std::endl;
             appendCsv(csvPath, sz, "NCCL", i, us);
         }
