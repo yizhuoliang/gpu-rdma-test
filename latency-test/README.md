@@ -15,7 +15,7 @@ Measures round-trip latency with two patterns and sizes:
 ### Setup (conda) on BOTH hosts
 ```bash
 export REPO_ROOT_PATH=/path/to/your/clone
-conda create -n lattest -y -c conda-forge -c nvidia nccl=2.18.5.1 cuda-cudart=12.0.107 cuda-cudart-dev=12.0.107 zeromq cppzmq
+conda create -n lattest -y -c conda-forge -c nvidia nccl=2.18.5.1 cuda-cudart=12.0.107 cuda-cudart-dev=12.0.107 zeromq cppzmq ucx
 conda activate lattest
 
 cmake -S $REPO_ROOT_PATH/latency-test \

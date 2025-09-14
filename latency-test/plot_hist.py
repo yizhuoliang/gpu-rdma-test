@@ -33,9 +33,9 @@ def main(csv_path: str):
         labels = []
         values = []
         colors = []
-        color_map = {"ZMQ": "tab:blue", "NCCL": "tab:orange"}
+        color_map = {"ZMQ": "tab:blue", "NCCL": "tab:orange", "UCX": "tab:green"}
 
-        for pattern in ["ZMQ", "NCCL"]:
+        for pattern in ["ZMQ", "NCCL", "UCX"]:
             for r in range(1, 21):
                 sel = sub[(sub["pattern"] == pattern) & (sub["round"] == r)]
                 if sel.empty:
@@ -52,7 +52,7 @@ def main(csv_path: str):
         plt.ylabel("Latency (usec)")
         plt.title(f"Latency by round {titles[size]}")
         # Means
-        for pattern, color in [("ZMQ", "tab:blue"), ("NCCL", "tab:orange")]:
+        for pattern, color in [("ZMQ", "tab:blue"), ("NCCL", "tab:orange"), ("UCX", "tab:green")]:
             pdata = sub[sub["pattern"] == pattern]["latency_usec"].astype(float)
             if not pdata.empty:
                 mean_val = pdata.mean()
@@ -74,8 +74,8 @@ def main(csv_path: str):
         labels = []
         values = []
         colors = []
-        color_map = {"ZMQ": "tab:blue", "NCCL": "tab:orange"}
-        for pattern in ["ZMQ", "NCCL"]:
+        color_map = {"ZMQ": "tab:blue", "NCCL": "tab:orange", "UCX": "tab:green"}
+        for pattern in ["ZMQ", "NCCL", "UCX"]:
             for r in range(1, 21):
                 sel = sub[(sub["pattern"] == pattern) & (sub["round"] == r)]
                 if sel.empty:
@@ -91,7 +91,7 @@ def main(csv_path: str):
         ax.set_ylabel("usec")
         ax.set_title(titles[size])
         # Means
-        for pattern, color in [("ZMQ", "tab:blue"), ("NCCL", "tab:orange")]:
+        for pattern, color in [("ZMQ", "tab:blue"), ("NCCL", "tab:orange"), ("UCX", "tab:green")]:
             pdata = sub[sub["pattern"] == pattern]["latency_usec"].astype(float)
             if not pdata.empty:
                 mean_val = pdata.mean()

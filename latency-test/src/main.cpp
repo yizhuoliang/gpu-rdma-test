@@ -2,6 +2,8 @@
 #include <cuda_runtime.h>
 #include <nccl.h>
 #include <zmq.hpp>
+#include <ucp/api/ucp.h>
+#include <ucs/type/status.h>
 
 #include <chrono>
 #include <cstring>
@@ -68,6 +70,143 @@ double runZmqRoundtrip(size_t numBytes, bool isServer) {
     }
     auto t1 = clock_type::now();
     return std::chrono::duration<double, std::micro>(t1 - t0).count();
+}
+
+// 3: CPU<->CPU latency using UCX UCP TAG roundtrip over IB (address exchange via TCP)
+static void ucxWait(ucp_worker_h worker, void* request) {
+    if (request == nullptr) return;
+    if (!UCS_PTR_IS_PTR(request)) {
+        ucs_status_t status = (ucs_status_t)UCS_PTR_STATUS(request);
+        if (status != UCS_OK) {
+            std::cerr << "UCX request error: " << ucs_status_string(status) << std::endl;
+            std::exit(EXIT_FAILURE);
+        }
+        return;
+    }
+    ucs_status_t status;
+    do {
+        ucp_worker_progress(worker);
+        status = ucp_request_check_status(request);
+    } while (status == UCS_INPROGRESS);
+    if (status != UCS_OK) {
+        std::cerr << "UCX request complete with error: " << ucs_status_string(status) << std::endl;
+        std::exit(EXIT_FAILURE);
+    }
+    ucp_request_free(request);
+}
+
+double runUcxRoundtrip(size_t numBytes, bool isServer) {
+    const uint64_t TAG1 = 0x1111ULL;
+    const uint64_t TAG2 = 0x2222ULL;
+
+    // OOB TCP for address exchange
+    int port = TEST_PORT + 2;
+    int sockfd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd < 0) { perror("socket"); return -1.0; }
+    if (isServer) {
+        int yes = 1; setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+        sockaddr_in addr{}; addr.sin_family = AF_INET; addr.sin_port = htons(port);
+        inet_pton(AF_INET, SERVER_IP, &addr.sin_addr);
+        if (bind(sockfd, (sockaddr*)&addr, sizeof(addr)) != 0) { perror("bind"); return -1.0; }
+        if (listen(sockfd, 1) != 0) { perror("listen"); return -1.0; }
+        int conn = accept(sockfd, nullptr, nullptr);
+        if (conn < 0) { perror("accept"); return -1.0; }
+        close(sockfd); sockfd = conn;
+    } else {
+        sockaddr_in addr{}; addr.sin_family = AF_INET; addr.sin_port = htons(port);
+        inet_pton(AF_INET, SERVER_IP, &addr.sin_addr);
+        const int maxAttempts = 50;
+        int attempt = 0;
+        while (connect(sockfd, (sockaddr*)&addr, sizeof(addr)) != 0) {
+            if (++attempt >= maxAttempts) { perror("connect"); return -1.0; }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }
+
+    // UCX init
+    ucp_config_t* config = nullptr;
+    if (ucp_config_read(nullptr, nullptr, &config) != UCS_OK) { std::cerr << "ucp_config_read failed" << std::endl; return -1.0; }
+    ucp_params_t params{}; params.field_mask = UCP_PARAM_FIELD_FEATURES; params.features = UCP_FEATURE_TAG;
+    ucp_context_h context{};
+    if (ucp_init(&params, config, &context) != UCS_OK) { std::cerr << "ucp_init failed" << std::endl; return -1.0; }
+    ucp_config_release(config);
+
+    ucp_worker_params_t wparams{}; wparams.field_mask = UCP_WORKER_PARAM_FIELD_THREAD_MODE; wparams.thread_mode = UCS_THREAD_MODE_SINGLE;
+    ucp_worker_h worker{};
+    if (ucp_worker_create(context, &wparams, &worker) != UCS_OK) { std::cerr << "ucp_worker_create failed" << std::endl; return -1.0; }
+
+    ucp_address_t* my_addr{}; size_t my_addr_len{};
+    if (ucp_worker_get_address(worker, &my_addr, &my_addr_len) != UCS_OK) { std::cerr << "ucp_worker_get_address failed" << std::endl; return -1.0; }
+
+    // Exchange addresses (server sends first)
+    auto send_all = [&](const void* buf, size_t len) {
+        const char* p = (const char*)buf; size_t sent = 0; while (sent < len) { ssize_t n = send(sockfd, p + sent, len - sent, 0); if (n <= 0) { perror("send"); std::exit(EXIT_FAILURE); } sent += (size_t)n; }
+    };
+    auto recv_all = [&](void* buf, size_t len) {
+        char* p = (char*)buf; size_t recvd = 0; while (recvd < len) { ssize_t n = recv(sockfd, p + recvd, len - recvd, 0); if (n <= 0) { perror("recv"); std::exit(EXIT_FAILURE); } recvd += (size_t)n; }
+    };
+
+    uint32_t l_my = (uint32_t)my_addr_len; uint32_t l_peer = 0;
+    if (isServer) {
+        uint32_t netlen = htonl(l_my); send_all(&netlen, sizeof(netlen));
+        recv_all(&l_peer, sizeof(l_peer)); l_peer = ntohl(l_peer);
+    } else {
+        recv_all(&l_peer, sizeof(l_peer)); l_peer = ntohl(l_peer);
+        uint32_t netlen = htonl(l_my); send_all(&netlen, sizeof(netlen));
+    }
+    std::vector<uint8_t> peer_addr(l_peer);
+    if (isServer) {
+        // Server sends its address then receives peer's address
+        send_all(my_addr, my_addr_len);
+        recv_all(peer_addr.data(), peer_addr.size());
+    } else {
+        // Client receives server address then sends its address
+        recv_all(peer_addr.data(), peer_addr.size());
+        send_all(my_addr, my_addr_len);
+    }
+
+    // Create endpoint to peer
+    ucp_ep_params_t epp{}; epp.field_mask = UCP_EP_PARAM_FIELD_REMOTE_ADDRESS; epp.address = (ucp_address_t*)peer_addr.data();
+    ucp_ep_h ep{}; if (ucp_ep_create(worker, &epp, &ep) != UCS_OK) { std::cerr << "ucp_ep_create failed" << std::endl; return -1.0; }
+
+    // Warmup
+    std::vector<uint8_t> buf(numBytes, 0xAB);
+    if (isServer) {
+        void* sreq = ucp_tag_send_nbx(ep, buf.data(), buf.size(), TAG1, nullptr);
+        ucxWait(worker, sreq);
+        void* rreq = ucp_tag_recv_nbx(worker, buf.data(), buf.size(), TAG2, (uint64_t)-1, nullptr);
+        ucxWait(worker, rreq);
+    } else {
+        void* rreq = ucp_tag_recv_nbx(worker, buf.data(), buf.size(), TAG1, (uint64_t)-1, nullptr);
+        ucxWait(worker, rreq);
+        void* sreq = ucp_tag_send_nbx(ep, buf.data(), buf.size(), TAG2, nullptr);
+        ucxWait(worker, sreq);
+    }
+
+    // Timed round
+    auto t0 = clock_type::now();
+    if (isServer) {
+        void* sreq = ucp_tag_send_nbx(ep, buf.data(), buf.size(), TAG1, nullptr);
+        ucxWait(worker, sreq);
+        void* rreq = ucp_tag_recv_nbx(worker, buf.data(), buf.size(), TAG2, (uint64_t)-1, nullptr);
+        ucxWait(worker, rreq);
+    } else {
+        void* rreq = ucp_tag_recv_nbx(worker, buf.data(), buf.size(), TAG1, (uint64_t)-1, nullptr);
+        ucxWait(worker, rreq);
+        void* sreq = ucp_tag_send_nbx(ep, buf.data(), buf.size(), TAG2, nullptr);
+        ucxWait(worker, sreq);
+    }
+    auto t1 = clock_type::now();
+
+    double usec = std::chrono::duration<double, std::micro>(t1 - t0).count();
+
+    // Cleanup
+    ucp_ep_destroy(ep);
+    ucp_worker_release_address(worker, my_addr);
+    ucp_worker_destroy(worker);
+    ucp_cleanup(context);
+    close(sockfd);
+    return usec;
 }
 
 // 2 & 4: CPU->GPU->IB->GPU->CPU using NCCL send/recv and TCP rendezvous
@@ -246,6 +385,12 @@ int main(int argc, char** argv) {
             double us = runNcclCpuGpuRoundtrip(sz, isServer, noCopy);
             if (isServer) std::cout << "NCCL size=" << sz << "B round=" << i << " usec=" << us << std::endl;
             appendCsv(csvPath, sz, "NCCL", i, us);
+        }
+        // UCX: 20 rounds
+        for (int i = 1; i <= 20; ++i) {
+            double us = runUcxRoundtrip(sz, isServer);
+            if (isServer) std::cout << "UCX size=" << sz << "B round=" << i << " usec=" << us << std::endl;
+            appendCsv(csvPath, sz, "UCX", i, us);
         }
     }
 
