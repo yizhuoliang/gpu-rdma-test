@@ -138,7 +138,7 @@ double runUcxRoundtrip(size_t numBytes, bool isServer) {
     ucp_address_t* my_addr{}; size_t my_addr_len{};
     if (ucp_worker_get_address(worker, &my_addr, &my_addr_len) != UCS_OK) { std::cerr << "ucp_worker_get_address failed" << std::endl; return -1.0; }
 
-    // Exchange addresses (server sends first)
+    // Exchange addresses (two-phase: lengths then addresses)
     auto send_all = [&](const void* buf, size_t len) {
         const char* p = (const char*)buf; size_t sent = 0; while (sent < len) { ssize_t n = send(sockfd, p + sent, len - sent, 0); if (n <= 0) { perror("send"); std::exit(EXIT_FAILURE); } sent += (size_t)n; }
     };
@@ -156,11 +156,11 @@ double runUcxRoundtrip(size_t numBytes, bool isServer) {
     }
     std::vector<uint8_t> peer_addr(l_peer);
     if (isServer) {
-        // Server sends its address then receives peer's address
+        // After exchanging lengths, send our address then receive peer's address
         send_all(my_addr, my_addr_len);
         recv_all(peer_addr.data(), peer_addr.size());
     } else {
-        // Client receives server address then sends its address
+        // Receive server address then send our address
         recv_all(peer_addr.data(), peer_addr.size());
         send_all(my_addr, my_addr_len);
     }
@@ -169,31 +169,38 @@ double runUcxRoundtrip(size_t numBytes, bool isServer) {
     ucp_ep_params_t epp{}; epp.field_mask = UCP_EP_PARAM_FIELD_REMOTE_ADDRESS; epp.address = (ucp_address_t*)peer_addr.data();
     ucp_ep_h ep{}; if (ucp_ep_create(worker, &epp, &ep) != UCS_OK) { std::cerr << "ucp_ep_create failed" << std::endl; return -1.0; }
 
+    // Ensure endpoint is ready before first send
+    ucp_request_param_t fparam{}; fparam.op_attr_mask = 0;
+    void* freq = ucp_ep_flush_nbx(ep, &fparam);
+    ucxWait(worker, freq);
+
     // Warmup
     std::vector<uint8_t> buf(numBytes, 0xAB);
+    ucp_request_param_t sp{}; sp.op_attr_mask = 0;
+    ucp_request_param_t rp{}; rp.op_attr_mask = 0;
     if (isServer) {
-        void* sreq = ucp_tag_send_nbx(ep, buf.data(), buf.size(), TAG1, nullptr);
+        void* sreq = ucp_tag_send_nbx(ep, buf.data(), buf.size(), TAG1, &sp);
         ucxWait(worker, sreq);
-        void* rreq = ucp_tag_recv_nbx(worker, buf.data(), buf.size(), TAG2, (uint64_t)-1, nullptr);
+        void* rreq = ucp_tag_recv_nbx(worker, buf.data(), buf.size(), TAG2, (uint64_t)-1, &rp);
         ucxWait(worker, rreq);
     } else {
-        void* rreq = ucp_tag_recv_nbx(worker, buf.data(), buf.size(), TAG1, (uint64_t)-1, nullptr);
+        void* rreq = ucp_tag_recv_nbx(worker, buf.data(), buf.size(), TAG1, (uint64_t)-1, &rp);
         ucxWait(worker, rreq);
-        void* sreq = ucp_tag_send_nbx(ep, buf.data(), buf.size(), TAG2, nullptr);
+        void* sreq = ucp_tag_send_nbx(ep, buf.data(), buf.size(), TAG2, &sp);
         ucxWait(worker, sreq);
     }
 
     // Timed round
     auto t0 = clock_type::now();
     if (isServer) {
-        void* sreq = ucp_tag_send_nbx(ep, buf.data(), buf.size(), TAG1, nullptr);
+        void* sreq = ucp_tag_send_nbx(ep, buf.data(), buf.size(), TAG1, &sp);
         ucxWait(worker, sreq);
-        void* rreq = ucp_tag_recv_nbx(worker, buf.data(), buf.size(), TAG2, (uint64_t)-1, nullptr);
+        void* rreq = ucp_tag_recv_nbx(worker, buf.data(), buf.size(), TAG2, (uint64_t)-1, &rp);
         ucxWait(worker, rreq);
     } else {
-        void* rreq = ucp_tag_recv_nbx(worker, buf.data(), buf.size(), TAG1, (uint64_t)-1, nullptr);
+        void* rreq = ucp_tag_recv_nbx(worker, buf.data(), buf.size(), TAG1, (uint64_t)-1, &rp);
         ucxWait(worker, rreq);
-        void* sreq = ucp_tag_send_nbx(ep, buf.data(), buf.size(), TAG2, nullptr);
+        void* sreq = ucp_tag_send_nbx(ep, buf.data(), buf.size(), TAG2, &sp);
         ucxWait(worker, sreq);
     }
     auto t1 = clock_type::now();
