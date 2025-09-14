@@ -173,6 +173,8 @@ double runNcclCpuGpuRoundtrip(size_t numBytes, bool isServer) {
 
         // Bring to host, then echo back same payload and push to device
         throwOnCudaError(cudaMemcpyAsync(h_recv_t.data(), d_recv_t, numFloats * sizeof(float), cudaMemcpyDeviceToHost, stream), "D2H after recv");
+        // Ensure no overlap between D2H and H2D on the client
+        throwOnCudaError(cudaStreamSynchronize(stream), "sync after D2H before H2D");
         throwOnCudaError(cudaMemcpyAsync(d_send_t, h_recv_t.data(), numFloats * sizeof(float), cudaMemcpyHostToDevice, stream), "H2D before send");
 
         // Phase 2: client sends to server
