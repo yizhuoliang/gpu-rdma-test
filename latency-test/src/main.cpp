@@ -35,8 +35,8 @@ static void throwOnNcclError(ncclResult_t status, const char* msg) {
     }
 }
 
-// 1 & 3: CPU<->CPU latency using ZeroMQ REQ/REP roundtrip
-double runZmqRoundtrip(size_t numBytes, bool isServer) {
+// 1 & 3: CPU<->CPU latency using ZeroMQ REQ/REP roundtrip (warmup + N rounds inside)
+std::vector<double> runZmqRoundtrips(size_t numBytes, bool isServer, int rounds) {
     zmq::context_t ctx(1);
     zmq::socket_t sock(ctx, isServer ? ZMQ_REP : ZMQ_REQ);
     std::string ep = std::string("tcp://") + (isServer ? SERVER_IP : SERVER_IP) + ":" + std::to_string(TEST_PORT);
@@ -60,16 +60,21 @@ double runZmqRoundtrip(size_t numBytes, bool isServer) {
         sock.send(zmq::buffer(payload), zmq::send_flags::none);
     }
 
-    auto t0 = clock_type::now();
-    if (!isServer) {
-        sock.send(zmq::buffer(payload), zmq::send_flags::none);
-        sock.recv(msg_recv, zmq::recv_flags::none);
-    } else {
-        sock.recv(msg_recv, zmq::recv_flags::none);
-        sock.send(zmq::buffer(payload), zmq::send_flags::none);
+    std::vector<double> results;
+    results.reserve(rounds);
+    for (int i = 0; i < rounds; ++i) {
+        auto t0 = clock_type::now();
+        if (!isServer) {
+            sock.send(zmq::buffer(payload), zmq::send_flags::none);
+            sock.recv(msg_recv, zmq::recv_flags::none);
+        } else {
+            sock.recv(msg_recv, zmq::recv_flags::none);
+            sock.send(zmq::buffer(payload), zmq::send_flags::none);
+        }
+        auto t1 = clock_type::now();
+        results.push_back(std::chrono::duration<double, std::micro>(t1 - t0).count());
     }
-    auto t1 = clock_type::now();
-    return std::chrono::duration<double, std::micro>(t1 - t0).count();
+    return results;
 }
 
 // 3: CPU<->CPU latency using UCX UCP TAG roundtrip over IB (address exchange via TCP)
@@ -95,7 +100,7 @@ static void ucxWait(ucp_worker_h worker, void* request) {
     ucp_request_free(request);
 }
 
-double runUcxRoundtrip(size_t numBytes, bool isServer) {
+std::vector<double> runUcxRoundtrips(size_t numBytes, bool isServer, int rounds) {
     const uint64_t TAG1 = 0x1111ULL;
     const uint64_t TAG2 = 0x2222ULL;
 
@@ -190,22 +195,23 @@ double runUcxRoundtrip(size_t numBytes, bool isServer) {
         ucxWait(worker, sreq);
     }
 
-    // Timed round
-    auto t0 = clock_type::now();
-    if (isServer) {
-        void* sreq = ucp_tag_send_nbx(ep, buf.data(), buf.size(), TAG1, &sp);
-        ucxWait(worker, sreq);
-        void* rreq = ucp_tag_recv_nbx(worker, buf.data(), buf.size(), TAG2, (uint64_t)-1, &rp);
-        ucxWait(worker, rreq);
-    } else {
-        void* rreq = ucp_tag_recv_nbx(worker, buf.data(), buf.size(), TAG1, (uint64_t)-1, &rp);
-        ucxWait(worker, rreq);
-        void* sreq = ucp_tag_send_nbx(ep, buf.data(), buf.size(), TAG2, &sp);
-        ucxWait(worker, sreq);
+    std::vector<double> results; results.reserve(rounds);
+    for (int i = 0; i < rounds; ++i) {
+        auto t0 = clock_type::now();
+        if (isServer) {
+            void* sreq = ucp_tag_send_nbx(ep, buf.data(), buf.size(), TAG1, &sp);
+            ucxWait(worker, sreq);
+            void* rreq = ucp_tag_recv_nbx(worker, buf.data(), buf.size(), TAG2, (uint64_t)-1, &rp);
+            ucxWait(worker, rreq);
+        } else {
+            void* rreq = ucp_tag_recv_nbx(worker, buf.data(), buf.size(), TAG1, (uint64_t)-1, &rp);
+            ucxWait(worker, rreq);
+            void* sreq = ucp_tag_send_nbx(ep, buf.data(), buf.size(), TAG2, &sp);
+            ucxWait(worker, sreq);
+        }
+        auto t1 = clock_type::now();
+        results.push_back(std::chrono::duration<double, std::micro>(t1 - t0).count());
     }
-    auto t1 = clock_type::now();
-
-    double usec = std::chrono::duration<double, std::micro>(t1 - t0).count();
 
     // Cleanup
     ucp_ep_destroy(ep);
@@ -213,11 +219,11 @@ double runUcxRoundtrip(size_t numBytes, bool isServer) {
     ucp_worker_destroy(worker);
     ucp_cleanup(context);
     close(sockfd);
-    return usec;
+    return results;
 }
 
 // 2 & 4: CPU->GPU->IB->GPU->CPU using NCCL send/recv and TCP rendezvous
-double runNcclCpuGpuRoundtrip(size_t numBytes, bool isServer, bool noCopy) {
+std::vector<double> runNcclCpuGpuRoundtrips(size_t numBytes, bool isServer, bool noCopy, int rounds) {
     int port = TEST_PORT + 1; // different port for rendezvous
     int sockfd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) { perror("socket"); return -1.0; }
@@ -287,68 +293,70 @@ double runNcclCpuGpuRoundtrip(size_t numBytes, bool isServer, bool noCopy) {
     throwOnNcclError(ncclGroupEnd(), "warmup group end");
     throwOnCudaError(cudaStreamSynchronize(stream), "warmup sync");
 
-    // Timed section includes cudaMalloc, H2D before send, NCCL transfer, and D2H after recv
-    float* d_send_t = nullptr; float* d_recv_t = nullptr;
-    std::vector<float> h_send_t(numFloats, 2.0f);
-    std::vector<float> h_recv_t(numFloats);
+    std::vector<double> results; results.reserve(rounds);
+    for (int iter = 0; iter < rounds; ++iter) {
+        // Timed section includes cudaMalloc, H2D before send, NCCL transfer, and D2H after recv
+        float* d_send_t = nullptr; float* d_recv_t = nullptr;
+        std::vector<float> h_send_t(numFloats, 2.0f);
+        std::vector<float> h_recv_t(numFloats);
 
-    auto t0 = clock_type::now();
-    // Allocate device buffers (counted)
-    throwOnCudaError(cudaMalloc(&d_send_t, numFloats * sizeof(float)), "cudaMalloc timed send");
-    throwOnCudaError(cudaMalloc(&d_recv_t, numFloats * sizeof(float)), "cudaMalloc timed recv");
+        auto t0 = clock_type::now();
+        // Allocate device buffers (counted)
+        throwOnCudaError(cudaMalloc(&d_send_t, numFloats * sizeof(float)), "cudaMalloc timed send");
+        throwOnCudaError(cudaMalloc(&d_recv_t, numFloats * sizeof(float)), "cudaMalloc timed recv");
 
-    // Host to device before network (counted)
-    if (!noCopy) {
-        throwOnCudaError(cudaMemcpyAsync(d_send_t, h_send_t.data(), numFloats * sizeof(float), cudaMemcpyHostToDevice, stream), "H2D timed");
-    }
-
-    if (isServer) {
-        // Phase 1: server sends to client
-        throwOnNcclError(ncclGroupStart(), "group start phase1");
-        throwOnNcclError(ncclSend(d_send_t, numFloats, ncclFloat, 1, comm, stream), "send phase1");
-        throwOnNcclError(ncclGroupEnd(), "group end phase1");
-
-        // Phase 2: server receives from client
-        throwOnNcclError(ncclGroupStart(), "group start phase2");
-        throwOnNcclError(ncclRecv(d_recv_t, numFloats, ncclFloat, 1, comm, stream), "recv phase2");
-        throwOnNcclError(ncclGroupEnd(), "group end phase2");
-
-        // Device to host after network (counted)
+        // Host to device before network (counted)
         if (!noCopy) {
-            throwOnCudaError(cudaMemcpyAsync(h_recv_t.data(), d_recv_t, numFloats * sizeof(float), cudaMemcpyDeviceToHost, stream), "D2H timed");
-        }
-    } else {
-        // Phase 1: client receives from server
-        throwOnNcclError(ncclGroupStart(), "group start phase1");
-        throwOnNcclError(ncclRecv(d_recv_t, numFloats, ncclFloat, 0, comm, stream), "recv phase1");
-        throwOnNcclError(ncclGroupEnd(), "group end phase1");
-
-        // Bring to host, then echo back same payload and push to device
-        if (!noCopy) {
-            throwOnCudaError(cudaMemcpyAsync(h_recv_t.data(), d_recv_t, numFloats * sizeof(float), cudaMemcpyDeviceToHost, stream), "D2H after recv");
-            // Ensure no overlap between D2H and H2D on the client
-            throwOnCudaError(cudaStreamSynchronize(stream), "sync after D2H before H2D");
-            throwOnCudaError(cudaMemcpyAsync(d_send_t, h_recv_t.data(), numFloats * sizeof(float), cudaMemcpyHostToDevice, stream), "H2D before send");
+            throwOnCudaError(cudaMemcpyAsync(d_send_t, h_send_t.data(), numFloats * sizeof(float), cudaMemcpyHostToDevice, stream), "H2D timed");
         }
 
-        // Phase 2: client sends to server
-        throwOnNcclError(ncclGroupStart(), "group start phase2");
-        throwOnNcclError(ncclSend(d_send_t, numFloats, ncclFloat, 0, comm, stream), "send phase2");
-        throwOnNcclError(ncclGroupEnd(), "group end phase2");
+        if (isServer) {
+            // Phase 1: server sends to client
+            throwOnNcclError(ncclGroupStart(), "group start phase1");
+            throwOnNcclError(ncclSend(d_send_t, numFloats, ncclFloat, 1, comm, stream), "send phase1");
+            throwOnNcclError(ncclGroupEnd(), "group end phase1");
+
+            // Phase 2: server receives from client
+            throwOnNcclError(ncclGroupStart(), "group start phase2");
+            throwOnNcclError(ncclRecv(d_recv_t, numFloats, ncclFloat, 1, comm, stream), "recv phase2");
+            throwOnNcclError(ncclGroupEnd(), "group end phase2");
+
+            // Device to host after network (counted)
+            if (!noCopy) {
+                throwOnCudaError(cudaMemcpyAsync(h_recv_t.data(), d_recv_t, numFloats * sizeof(float), cudaMemcpyDeviceToHost, stream), "D2H timed");
+            }
+        } else {
+            // Phase 1: client receives from server
+            throwOnNcclError(ncclGroupStart(), "group start phase1");
+            throwOnNcclError(ncclRecv(d_recv_t, numFloats, ncclFloat, 0, comm, stream), "recv phase1");
+            throwOnNcclError(ncclGroupEnd(), "group end phase1");
+
+            // Bring to host, then echo back same payload and push to device
+            if (!noCopy) {
+                throwOnCudaError(cudaMemcpyAsync(h_recv_t.data(), d_recv_t, numFloats * sizeof(float), cudaMemcpyDeviceToHost, stream), "D2H after recv");
+                // Ensure no overlap between D2H and H2D on the client
+                throwOnCudaError(cudaStreamSynchronize(stream), "sync after D2H before H2D");
+                throwOnCudaError(cudaMemcpyAsync(d_send_t, h_recv_t.data(), numFloats * sizeof(float), cudaMemcpyHostToDevice, stream), "H2D before send");
+            }
+
+            // Phase 2: client sends to server
+            throwOnNcclError(ncclGroupStart(), "group start phase2");
+            throwOnNcclError(ncclSend(d_send_t, numFloats, ncclFloat, 0, comm, stream), "send phase2");
+            throwOnNcclError(ncclGroupEnd(), "group end phase2");
+        }
+
+        throwOnCudaError(cudaStreamSynchronize(stream), "sync timed");
+        auto t1 = clock_type::now();
+        results.push_back(std::chrono::duration<double, std::micro>(t1 - t0).count());
+
+        cudaFree(d_send_t); cudaFree(d_recv_t);
     }
-
-    throwOnCudaError(cudaStreamSynchronize(stream), "sync timed");
-    auto t1 = clock_type::now();
-
-    double usec = std::chrono::duration<double, std::micro>(t1 - t0).count();
-
-    cudaFree(d_send_t); cudaFree(d_recv_t);
 
     cudaStreamDestroy(stream);
     ncclCommDestroy(comm);
     cudaFree(d_send); cudaFree(d_recv);
     close(sockfd);
-    return usec;
+    return results;
 }
 
 int main(int argc, char** argv) {
@@ -381,23 +389,29 @@ int main(int argc, char** argv) {
     };
 
     for (size_t sz : sizes) {
-        // ZMQ: 20 rounds
-        for (int i = 1; i <= 20; ++i) {
-            double us = runZmqRoundtrip(sz, isServer);
-            if (isServer) std::cout << "ZMQ size=" << sz << "B round=" << i << " usec=" << us << std::endl;
-            appendCsv(csvPath, sz, "ZMQ", i, us);
+        // ZMQ: warmup + N inside
+        auto zmq_results = runZmqRoundtrips(sz, isServer, 20);
+        if (isServer) {
+            for (size_t i = 0; i < zmq_results.size(); ++i) {
+                std::cout << "ZMQ size=" << sz << "B round=" << (i+1) << " usec=" << zmq_results[i] << std::endl;
+                appendCsv(csvPath, sz, "ZMQ", (int)(i+1), zmq_results[i]);
+            }
         }
-        // NCCL: 20 rounds
-        for (int i = 1; i <= 20; ++i) {
-            double us = runNcclCpuGpuRoundtrip(sz, isServer, noCopy);
-            if (isServer) std::cout << "NCCL size=" << sz << "B round=" << i << " usec=" << us << std::endl;
-            appendCsv(csvPath, sz, "NCCL", i, us);
+        // NCCL: warmup + N inside
+        auto nccl_results = runNcclCpuGpuRoundtrips(sz, isServer, noCopy, 20);
+        if (isServer) {
+            for (size_t i = 0; i < nccl_results.size(); ++i) {
+                std::cout << "NCCL size=" << sz << "B round=" << (i+1) << " usec=" << nccl_results[i] << std::endl;
+                appendCsv(csvPath, sz, "NCCL", (int)(i+1), nccl_results[i]);
+            }
         }
-        // UCX: 20 rounds
-        for (int i = 1; i <= 20; ++i) {
-            double us = runUcxRoundtrip(sz, isServer);
-            if (isServer) std::cout << "UCX size=" << sz << "B round=" << i << " usec=" << us << std::endl;
-            appendCsv(csvPath, sz, "UCX", i, us);
+        // UCX: warmup + N inside
+        auto ucx_results = runUcxRoundtrips(sz, isServer, 20);
+        if (isServer) {
+            for (size_t i = 0; i < ucx_results.size(); ++i) {
+                std::cout << "UCX size=" << sz << "B round=" << (i+1) << " usec=" << ucx_results[i] << std::endl;
+                appendCsv(csvPath, sz, "UCX", (int)(i+1), ucx_results[i]);
+            }
         }
     }
 
