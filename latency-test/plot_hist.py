@@ -19,8 +19,8 @@ def main(csv_path: str):
         print(f"CSV missing required columns: {required_cols}")
         sys.exit(1)
 
-    sizes = [512, 1024, 2048, 4096, 8192, 16384, 1024 * 1024 * 1024]
-    titles = {512: "0.5KB", 1024: "1KB", 2048: "2KB", 4096: "4KB", 8192: "8KB", 16384: "16KB", 1024 * 1024 * 1024: "1GB"}
+    sizes = [512, 1024, 2048, 4096, 8192, 16384, 262144, 1048576, 1024 * 1024 * 1024]
+    titles = {512: "0.5KB", 1024: "1KB", 2048: "2KB", 4096: "4KB", 8192: "8KB", 16384: "16KB", 262144: "256KB", 1048576: "1MB", 1024 * 1024 * 1024: "1GB"}
 
     # Use the latest entry per (size, pattern, round) in case CSV has multiple runs appended
     df = df.sort_index()  # original order; tail selection uses last occurrence

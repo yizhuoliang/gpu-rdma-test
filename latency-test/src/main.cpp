@@ -385,6 +385,8 @@ int main(int argc, char** argv) {
         4096ULL,
         8192ULL,
         16384ULL,
+        262144ULL,
+        1048576ULL,
         1073741824ULL
     };
 
