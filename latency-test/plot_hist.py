@@ -4,6 +4,8 @@ import os
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.patches import Patch
+from matplotlib.lines import Line2D
 
 
 def main(csv_path: str):
@@ -48,19 +50,30 @@ def main(csv_path: str):
         x = np.arange(len(values))
         plt.figure(figsize=(8, 4))
         plt.bar(x, values, color=colors)
-        plt.xticks(x, labels, rotation=0)
+        # No x-axis labels
+        plt.xticks([])
         plt.ylabel("Latency (usec)")
         plt.title(f"Latency by round {titles[size]}")
-        # Means
+        # Means (draw dashed lines)
+        mean_handles = []
         for pattern, color in [("ZMQ", "tab:blue"), ("NCCL", "tab:orange"), ("UCX", "tab:green")]:
             pdata = sub[sub["pattern"] == pattern]["latency_usec"].astype(float)
             if not pdata.empty:
                 mean_val = pdata.mean()
-                plt.axhline(mean_val, color=color, linestyle="--", linewidth=1.5, alpha=0.8, label=f"{pattern} mean")
-        plt.legend()
-        plt.tight_layout()
+                plt.axhline(mean_val, color=color, linestyle="--", linewidth=1.5, alpha=0.8)
+                mean_handles.append(Line2D([0], [0], color=color, linestyle="--", linewidth=1.5, label=f"{pattern} mean"))
+
+        # Legend: bar colors for transports + dashed lines for means (place above)
+        bar_handles = [
+            Patch(color="tab:blue", label="ZMQ"),
+            Patch(color="tab:orange", label="NCCL"),
+            Patch(color="tab:green", label="UCX"),
+        ]
+        plt.legend(handles=bar_handles + mean_handles, loc="upper center", ncol=4, bbox_to_anchor=(0.5, 1.15))
+        # Leave room for the legend
+        plt.tight_layout(rect=[0, 0, 1, 0.92])
         out_name = f"hist_{titles[size].lower()}.png"
-        plt.savefig(out_name, dpi=150)
+        plt.savefig(out_name, dpi=150, bbox_inches="tight")
         print(f"Saved {out_name}")
 
     # Combined figure: subplots for all sizes in one PNG
@@ -86,8 +99,8 @@ def main(csv_path: str):
                 colors.append(color_map.get(pattern, "gray"))
         x = np.arange(len(values))
         ax.bar(x, values, color=colors)
-        ax.set_xticks(x)
-        ax.set_xticklabels(labels, rotation=0, fontsize=8)
+        # No x-axis labels on subplots
+        ax.set_xticks([])
         ax.set_ylabel("usec")
         ax.set_title(titles[size])
         # Means
@@ -96,11 +109,24 @@ def main(csv_path: str):
             if not pdata.empty:
                 mean_val = pdata.mean()
                 ax.axhline(mean_val, color=color, linestyle="--", linewidth=1.0, alpha=0.8)
+    # Figure-level legend with bar colors (single legend for all subplots)
+    fig.legend(
+        handles=[
+            Patch(color="tab:blue", label="ZMQ"),
+            Patch(color="tab:orange", label="NCCL"),
+            Patch(color="tab:green", label="UCX"),
+            Line2D([0], [0], color="black", linestyle="--", label="Mean (per transport)")
+        ],
+        loc="upper center",
+        ncol=4,
+        bbox_to_anchor=(0.5, 1.02)
+    )
     # Hide any unused axes
     for j in range(len(sizes), len(axes)):
         fig.delaxes(axes[j])
-    fig.tight_layout()
-    fig.savefig("hist_all_sizes.png", dpi=150)
+    # Leave space for the legend and prevent cropping
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    fig.savefig("hist_all_sizes.png", dpi=150, bbox_inches="tight")
     print("Saved hist_all_sizes.png")
 
 
