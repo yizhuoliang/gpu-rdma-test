@@ -107,15 +107,15 @@ std::vector<double> runUcxRoundtrips(size_t numBytes, bool isServer, int rounds)
     // OOB TCP for address exchange
     int port = TEST_PORT + 2;
     int sockfd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd < 0) { perror("socket"); return -1.0; }
+    if (sockfd < 0) { perror("socket"); return {}; }
     if (isServer) {
         int yes = 1; setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
         sockaddr_in addr{}; addr.sin_family = AF_INET; addr.sin_port = htons(port);
         inet_pton(AF_INET, SERVER_IP, &addr.sin_addr);
-        if (bind(sockfd, (sockaddr*)&addr, sizeof(addr)) != 0) { perror("bind"); return -1.0; }
-        if (listen(sockfd, 1) != 0) { perror("listen"); return -1.0; }
+        if (bind(sockfd, (sockaddr*)&addr, sizeof(addr)) != 0) { perror("bind"); return {}; }
+        if (listen(sockfd, 1) != 0) { perror("listen"); return {}; }
         int conn = accept(sockfd, nullptr, nullptr);
-        if (conn < 0) { perror("accept"); return -1.0; }
+        if (conn < 0) { perror("accept"); return {}; }
         close(sockfd); sockfd = conn;
     } else {
         sockaddr_in addr{}; addr.sin_family = AF_INET; addr.sin_port = htons(port);
@@ -123,25 +123,25 @@ std::vector<double> runUcxRoundtrips(size_t numBytes, bool isServer, int rounds)
         const int maxAttempts = 50;
         int attempt = 0;
         while (connect(sockfd, (sockaddr*)&addr, sizeof(addr)) != 0) {
-            if (++attempt >= maxAttempts) { perror("connect"); return -1.0; }
+            if (++attempt >= maxAttempts) { perror("connect"); return {}; }
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     }
 
     // UCX init
     ucp_config_t* config = nullptr;
-    if (ucp_config_read(nullptr, nullptr, &config) != UCS_OK) { std::cerr << "ucp_config_read failed" << std::endl; return -1.0; }
+    if (ucp_config_read(nullptr, nullptr, &config) != UCS_OK) { std::cerr << "ucp_config_read failed" << std::endl; return {}; }
     ucp_params_t params{}; params.field_mask = UCP_PARAM_FIELD_FEATURES; params.features = UCP_FEATURE_TAG;
     ucp_context_h context{};
-    if (ucp_init(&params, config, &context) != UCS_OK) { std::cerr << "ucp_init failed" << std::endl; return -1.0; }
+    if (ucp_init(&params, config, &context) != UCS_OK) { std::cerr << "ucp_init failed" << std::endl; return {}; }
     ucp_config_release(config);
 
     ucp_worker_params_t wparams{}; wparams.field_mask = UCP_WORKER_PARAM_FIELD_THREAD_MODE; wparams.thread_mode = UCS_THREAD_MODE_SINGLE;
     ucp_worker_h worker{};
-    if (ucp_worker_create(context, &wparams, &worker) != UCS_OK) { std::cerr << "ucp_worker_create failed" << std::endl; return -1.0; }
+    if (ucp_worker_create(context, &wparams, &worker) != UCS_OK) { std::cerr << "ucp_worker_create failed" << std::endl; return {}; }
 
     ucp_address_t* my_addr{}; size_t my_addr_len{};
-    if (ucp_worker_get_address(worker, &my_addr, &my_addr_len) != UCS_OK) { std::cerr << "ucp_worker_get_address failed" << std::endl; return -1.0; }
+    if (ucp_worker_get_address(worker, &my_addr, &my_addr_len) != UCS_OK) { std::cerr << "ucp_worker_get_address failed" << std::endl; return {}; }
 
     // Exchange addresses (two-phase: lengths then addresses)
     auto send_all = [&](const void* buf, size_t len) {
@@ -172,7 +172,7 @@ std::vector<double> runUcxRoundtrips(size_t numBytes, bool isServer, int rounds)
 
     // Create endpoint to peer
     ucp_ep_params_t epp{}; epp.field_mask = UCP_EP_PARAM_FIELD_REMOTE_ADDRESS; epp.address = (ucp_address_t*)peer_addr.data();
-    ucp_ep_h ep{}; if (ucp_ep_create(worker, &epp, &ep) != UCS_OK) { std::cerr << "ucp_ep_create failed" << std::endl; return -1.0; }
+    ucp_ep_h ep{}; if (ucp_ep_create(worker, &epp, &ep) != UCS_OK) { std::cerr << "ucp_ep_create failed" << std::endl; return {}; }
 
     // Ensure endpoint is ready before first send
     ucp_request_param_t fparam{}; fparam.op_attr_mask = 0;
@@ -226,15 +226,15 @@ std::vector<double> runUcxRoundtrips(size_t numBytes, bool isServer, int rounds)
 std::vector<double> runNcclCpuGpuRoundtrips(size_t numBytes, bool isServer, bool noCopy, int rounds) {
     int port = TEST_PORT + 1; // different port for rendezvous
     int sockfd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd < 0) { perror("socket"); return -1.0; }
+    if (sockfd < 0) { perror("socket"); return {}; }
     if (isServer) {
         int yes = 1; setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
         sockaddr_in addr{}; addr.sin_family = AF_INET; addr.sin_port = htons(port);
         inet_pton(AF_INET, SERVER_IP, &addr.sin_addr);
-        if (bind(sockfd, (sockaddr*)&addr, sizeof(addr)) != 0) { perror("bind"); return -1.0; }
-        if (listen(sockfd, 1) != 0) { perror("listen"); return -1.0; }
+        if (bind(sockfd, (sockaddr*)&addr, sizeof(addr)) != 0) { perror("bind"); return {}; }
+        if (listen(sockfd, 1) != 0) { perror("listen"); return {}; }
         int conn = accept(sockfd, nullptr, nullptr);
-        if (conn < 0) { perror("accept"); return -1.0; }
+        if (conn < 0) { perror("accept"); return {}; }
         close(sockfd); sockfd = conn;
     } else {
         sockaddr_in addr{}; addr.sin_family = AF_INET; addr.sin_port = htons(port);
@@ -243,7 +243,7 @@ std::vector<double> runNcclCpuGpuRoundtrips(size_t numBytes, bool isServer, bool
         const int maxAttempts = 50; // ~5s total @ 100ms
         int attempt = 0;
         while (connect(sockfd, (sockaddr*)&addr, sizeof(addr)) != 0) {
-            if (++attempt >= maxAttempts) { perror("connect"); return -1.0; }
+            if (++attempt >= maxAttempts) { perror("connect"); return {}; }
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     }
@@ -271,9 +271,9 @@ std::vector<double> runNcclCpuGpuRoundtrips(size_t numBytes, bool isServer, bool
     ncclUniqueId id{};
     if (isServer) {
         throwOnNcclError(ncclGetUniqueId(&id), "ncclGetUniqueId");
-        if (send(sockfd, &id, sizeof(id), 0) != (ssize_t)sizeof(id)) { perror("send id"); return -1.0; }
+        if (send(sockfd, &id, sizeof(id), 0) != (ssize_t)sizeof(id)) { perror("send id"); return {}; }
     } else {
-        if (recv(sockfd, &id, sizeof(id), MSG_WAITALL) != (ssize_t)sizeof(id)) { perror("recv id"); return -1.0; }
+        if (recv(sockfd, &id, sizeof(id), MSG_WAITALL) != (ssize_t)sizeof(id)) { perror("recv id"); return {}; }
     }
 
     int rank = isServer ? 0 : 1;
