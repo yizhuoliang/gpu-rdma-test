@@ -111,17 +111,20 @@ int main(int argc, char** argv) {
     bool isServer = std::string(argv[1]) == "server";
     std::string mode = argv[2];
     const char* ip = "10.10.2.1"; // server IP
-    int port = 61000;
+    int port_base = 61000;
     size_t local_threads = 16;
     size_t remote_threads = 16;
     const std::vector<size_t> sizes = {1024, 8192, 65536, 131072, 1048576};
     int rounds = 20;
 
+    int idx = 0;
     for (size_t sz : sizes) {
+        int port = port_base + idx;
         if (mode == "zmq") run_zmq_fanin(isServer, ip, port, local_threads, remote_threads, sz, rounds);
         else if (mode == "ucx") run_ucx_fanin(isServer, ip, port, local_threads, remote_threads, sz, rounds);
         else { std::cerr << "mode must be zmq or ucx" << std::endl; return 1; }
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        ++idx;
     }
     return 0;
 }
