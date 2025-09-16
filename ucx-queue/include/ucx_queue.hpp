@@ -29,8 +29,9 @@ public:
     // Client: send message on a specific endpoint index (0..num_endpoints-1)
     void send(size_t ep_index, const void* buf, size_t len, uint64_t tag = 0xABCDEF);
 
-    // Server-only: create N local endpoints to self (UCX self/shm transports)
-    void create_local_endpoints(size_t count);
+    // Server-only: create N local endpoints to self (UCX self/shm transports).
+    // Returns the base index in `eps_` where these endpoints were appended contiguously.
+    size_t create_local_endpoints(size_t count);
 
     // Introspection
     size_t endpoint_count() const;

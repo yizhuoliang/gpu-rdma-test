@@ -111,6 +111,7 @@ void FanInQueue::start(size_t num_endpoints) {
 }
 
 void FanInQueue::acceptThread() {
+    std::cerr << "[accept] thread start" << std::endl;
     while (running_.load()) {
         int cfd = accept(tcp_listen_fd_, nullptr, nullptr);
         if (cfd < 0) break;
@@ -132,11 +133,14 @@ void FanInQueue::acceptThread() {
             eps_.push_back(eph);
         }
         ep_count_.fetch_add(1, std::memory_order_relaxed);
+        std::cerr << "[accept] new ep. total=" << ep_count_.load() << std::endl;
         close(cfd);
     }
+    std::cerr << "[accept] thread exit" << std::endl;
 }
 
 void FanInQueue::progressThread() {
+    std::cerr << "[progress] thread start" << std::endl;
     const uint64_t TAG = 0xABCDEF;
     while (running_.load()) {
         // poll for any message using tag API with any source
@@ -177,6 +181,7 @@ void FanInQueue::progressThread() {
             q_.push(std::move(m));
         }
     }
+    std::cerr << "[progress] thread exit" << std::endl;
 }
 
 void FanInQueue::send(size_t ep_index, const void* buf, size_t len, uint64_t tag) {
@@ -191,13 +196,15 @@ void FanInQueue::send(size_t ep_index, const void* buf, size_t len, uint64_t tag
     wait_req(worker_, req);
 }
 
-void FanInQueue::create_local_endpoints(size_t count) {
+size_t FanInQueue::create_local_endpoints(size_t count) {
     // Create UCX endpoints to self using the worker address; UCX will use self/shm transports
     ucp_address_t* my_addr{}; size_t my_len{};
     if (ucp_worker_get_address(worker_, &my_addr, &my_len) != UCS_OK) throw std::runtime_error("get_address failed");
+    size_t base_idx = 0;
     {
         std::lock_guard<std::mutex> lg(eps_mu_);
-        eps_.reserve(eps_.size() + count);
+        base_idx = eps_.size();
+        eps_.reserve(base_idx + count);
     }
     for (size_t i = 0; i < count; ++i) {
         ucp_ep_params_t ep{}; ep.field_mask = UCP_EP_PARAM_FIELD_REMOTE_ADDRESS; ep.address = my_addr;
@@ -209,6 +216,7 @@ void FanInQueue::create_local_endpoints(size_t count) {
         ep_count_.fetch_add(1, std::memory_order_relaxed);
     }
     ucp_worker_release_address(worker_, my_addr);
+    return base_idx;
 }
 
 bool FanInQueue::dequeue(Message& out) {
@@ -222,6 +230,7 @@ bool FanInQueue::dequeue(Message& out) {
         ucp_worker_progress(worker_);
         std::this_thread::yield();
     }
+    std::cerr << "[progress] thread exit" << std::endl;
 }
 
 void FanInQueue::stop() {

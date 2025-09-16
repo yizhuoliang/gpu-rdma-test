@@ -57,17 +57,18 @@ static void run_ucx_fanin(bool isServer, const char* ip, int port, size_t num_lo
         FanInQueue q("server", ip, port);
         q.start(num_local_senders + num_remote_senders);
         // Create local UCX endpoints to self first; UCX should pick sm/self for IPC
-        q.create_local_endpoints(num_local_senders);
+        size_t local_base = q.create_local_endpoints(num_local_senders);
         // Then wait until all remote endpoints are accepted as well
         while (q.endpoint_count() < (num_local_senders + num_remote_senders)) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            std::cerr << "[server] waiting eps=" << q.endpoint_count() << "/" << (num_local_senders + num_remote_senders) << std::endl;
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
         std::vector<std::thread> local;
         for (size_t i = 0; i < num_local_senders; ++i) {
             local.emplace_back([&, i]{
                 std::vector<uint8_t> payload(msg_bytes, 0x6B);
                 for (int r = 0; r < rounds; ++r) {
-                    q.send(i, payload.data(), payload.size());
+                    q.send(local_base + i, payload.data(), payload.size());
                 }
             });
         }
@@ -75,7 +76,9 @@ static void run_ucx_fanin(bool isServer, const char* ip, int port, size_t num_lo
         size_t expected = (num_local_senders + num_remote_senders) * (size_t)rounds;
         auto t0 = clock_type::now();
         size_t got = 0; Message m;
-        while (got < expected) { if (q.dequeue(m)) ++got; }
+        while (got < expected) {
+            if (q.dequeue(m)) ++got;
+        }
         auto t1 = clock_type::now();
         std::cout << "UCX fan-in msg_bytes=" << msg_bytes << " total_msgs=" << expected << " total_usec=" << std::chrono::duration<double, std::micro>(t1 - t0).count() << std::endl;
         for (auto& th : local) th.join();
@@ -85,7 +88,8 @@ static void run_ucx_fanin(bool isServer, const char* ip, int port, size_t num_lo
         q.start(num_remote_senders);
         // ensure endpoints established locally
         while (q.endpoint_count() < num_remote_senders) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            std::cerr << "[client] waiting eps=" << q.endpoint_count() << "/" << num_remote_senders << std::endl;
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
         // remote senders
         std::vector<std::thread> remote;
