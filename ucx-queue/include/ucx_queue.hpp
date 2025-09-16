@@ -6,6 +6,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <condition_variable>
 #include <queue>
 #include <string>
 #include <thread>
@@ -66,6 +67,7 @@ private:
 
     std::mutex q_mu_;
     std::queue<Message> q_;
+    std::condition_variable q_cv_;
 };
 
 } // namespace ucxq

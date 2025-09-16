@@ -50,8 +50,10 @@ FanInQueue::~FanInQueue() {
 void FanInQueue::start(size_t num_endpoints) {
     running_.store(true);
 
-    // Start progress thread
-    progress_thr_ = std::thread(&FanInQueue::progressThread, this);
+    // Start progress thread only on server, which is the receiver
+    if (role_ == "server") {
+        progress_thr_ = std::thread(&FanInQueue::progressThread, this);
+    }
 
     // Setup TCP listener or connect for address exchange
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
@@ -139,42 +141,33 @@ void FanInQueue::acceptThread() {
 void FanInQueue::progressThread() {
     const uint64_t TAG = 0xABCDEF;
     while (running_.load()) {
-        // poll for any message using tag API with any source
-        const size_t MAX = 2 * 1024 * 1024; // up to 2MB
-        std::vector<uint8_t> buf(MAX);
-        ucp_request_param_t prm{}; prm.op_attr_mask = 0;
-        void* req = ucp_tag_recv_nbx(worker_, buf.data(), buf.size(), TAG, (uint64_t)-1, &prm);
-        if (UCS_PTR_IS_ERR(req)) {
-            // progress and retry
-            ucp_worker_progress(worker_);
-            continue;
-        }
-        if (!UCS_PTR_IS_PTR(req)) {
-            // Immediate completion
-            ucs_status_t st = UCS_PTR_STATUS(req);
-            if (st != UCS_OK) { ucp_worker_progress(worker_); continue; }
-        } else {
-            // Wait with ability to cancel on shutdown
-            ucs_status_t st = UCS_INPROGRESS;
-            for (;;) {
-                st = ucp_request_check_status(req);
-                if (st != UCS_INPROGRESS) break;
-                if (!running_.load()) {
-                    ucp_request_cancel(worker_, req);
+        // Batch-drain a few messages per loop when available
+        int drained = 0;
+        for (; drained < 32 && running_.load(); ++drained) {
+            ucp_tag_recv_info_t info{};
+            ucp_tag_message_h msg = ucp_tag_probe_nb(worker_, TAG, (uint64_t)-1, 1, &info);
+            if (msg == nullptr) break;
+            std::vector<uint8_t> buf(info.length);
+            ucp_request_param_t prm{}; prm.op_attr_mask = 0;
+            void* req = ucp_tag_msg_recv_nbx(worker_, buf.data(), buf.size(), msg, &prm);
+            if (UCS_PTR_IS_ERR(req)) { ucp_worker_progress(worker_); continue; }
+            if (UCS_PTR_IS_PTR(req)) {
+                while (ucp_request_check_status(req) == UCS_INPROGRESS) {
+                    if (!running_.load()) { ucp_request_cancel(worker_, req); }
+                    ucp_worker_progress(worker_);
                 }
-                ucp_worker_progress(worker_);
+                ucp_request_free(req);
             }
-            ucp_request_free(req);
-            if (st != UCS_OK) {
-                // Canceled or error; skip enqueue
-                continue;
+            {
+                std::lock_guard<std::mutex> lg(q_mu_);
+                q_.push(Message{.data = std::move(buf)});
             }
+            q_cv_.notify_one();
         }
-        // Push exactly msg size; assume fixed size was agreed upon by sender threads.
-        Message m; m.data = std::move(buf);
-        {
-            std::lock_guard<std::mutex> lg(q_mu_);
-            q_.push(std::move(m));
+        // Make progress when nothing was drained
+        if (drained == 0) {
+            ucp_worker_progress(worker_);
+            std::this_thread::yield();
         }
     }
 }
@@ -215,17 +208,10 @@ size_t FanInQueue::create_local_endpoints(size_t count) {
 }
 
 bool FanInQueue::dequeue(Message& out) {
-    for (;;) {
-        {
-            std::lock_guard<std::mutex> lg(q_mu_);
-            if (!q_.empty()) { out = std::move(q_.front()); q_.pop(); return true; }
-        }
-        if (!running_.load()) return false;
-        // progress while waiting
-        ucp_worker_progress(worker_);
-        std::this_thread::yield();
-    }
-    std::cerr << "[progress] thread exit" << std::endl;
+    std::unique_lock<std::mutex> lk(q_mu_);
+    q_cv_.wait(lk, [&]{ return !q_.empty() || !running_.load(); });
+    if (!q_.empty()) { out = std::move(q_.front()); q_.pop(); return true; }
+    return false;
 }
 
 void FanInQueue::stop() {
