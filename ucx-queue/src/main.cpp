@@ -60,7 +60,6 @@ static void run_ucx_fanin(bool isServer, const char* ip, int port, size_t num_lo
         size_t local_base = q.create_local_endpoints(num_local_senders);
         // Then wait until all remote endpoints are accepted as well
         while (q.endpoint_count() < (num_local_senders + num_remote_senders)) {
-            std::cerr << "[server] waiting eps=" << q.endpoint_count() << "/" << (num_local_senders + num_remote_senders) << std::endl;
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
         std::vector<std::thread> local;
@@ -88,7 +87,6 @@ static void run_ucx_fanin(bool isServer, const char* ip, int port, size_t num_lo
         q.start(num_remote_senders);
         // ensure endpoints established locally
         while (q.endpoint_count() < num_remote_senders) {
-            std::cerr << "[client] waiting eps=" << q.endpoint_count() << "/" << num_remote_senders << std::endl;
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
         // remote senders
