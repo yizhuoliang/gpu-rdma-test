@@ -106,25 +106,82 @@ static void run_ucx_fanin(bool isServer, const char* ip, int port, size_t num_lo
     }
 }
 
+static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t num_local_senders, size_t num_remote_senders, const std::vector<size_t>& sizes, int rounds) {
+    using namespace ucxq;
+    if (isServer) {
+        FanInQueue q("server", ip, port);
+        q.start(num_local_senders + num_remote_senders);
+        size_t local_base = q.create_local_endpoints(num_local_senders);
+        while (q.endpoint_count() < (num_local_senders + num_remote_senders)) {
+            std::cerr << "[server] waiting eps=" << q.endpoint_count() << "/" << (num_local_senders + num_remote_senders) << std::endl;
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        for (size_t msg_bytes : sizes) {
+            // local senders for this size
+            std::vector<std::thread> local;
+            for (size_t i = 0; i < num_local_senders; ++i) {
+                local.emplace_back([&, i]{
+                    std::vector<uint8_t> payload(msg_bytes, 0x6B);
+                    for (int r = 0; r < rounds; ++r) {
+                        q.send(local_base + i, payload.data(), payload.size());
+                    }
+                });
+            }
+            // receive
+            size_t expected = (num_local_senders + num_remote_senders) * (size_t)rounds;
+            auto t0 = clock_type::now();
+            size_t got = 0; Message m;
+            while (got < expected) { if (q.dequeue(m)) ++got; }
+            auto t1 = clock_type::now();
+            std::cout << "UCX fan-in msg_bytes=" << msg_bytes << " total_msgs=" << expected << " total_usec=" << std::chrono::duration<double, std::micro>(t1 - t0).count() << std::endl;
+            for (auto& th : local) th.join();
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+        q.stop();
+    } else {
+        FanInQueue q("client", ip, port);
+        q.start(num_remote_senders);
+        while (q.endpoint_count() < num_remote_senders) {
+            std::cerr << "[client] waiting eps=" << q.endpoint_count() << "/" << num_remote_senders << std::endl;
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        for (size_t msg_bytes : sizes) {
+            std::vector<std::thread> remote;
+            for (size_t i = 0; i < num_remote_senders; ++i) {
+                remote.emplace_back([&, i]{
+                    std::vector<uint8_t> payload(msg_bytes, 0x6B);
+                    for (int r = 0; r < rounds; ++r) {
+                        q.send(i, payload.data(), payload.size());
+                    }
+                });
+            }
+            for (auto& th : remote) th.join();
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+        q.stop();
+    }
+}
+
 int main(int argc, char** argv) {
     if (argc < 3) { std::cerr << "Usage: ucx_queue_test server|client zmq|ucx" << std::endl; return 1; }
     bool isServer = std::string(argv[1]) == "server";
     std::string mode = argv[2];
     const char* ip = "10.10.2.1"; // server IP
-    int port_base = 61000;
+    int port = 61000;
     size_t local_threads = 16;
     size_t remote_threads = 16;
     const std::vector<size_t> sizes = {1024, 8192, 65536, 131072, 1048576};
     int rounds = 20;
 
-    int idx = 0;
-    for (size_t sz : sizes) {
-        int port = port_base + idx;
-        if (mode == "zmq") run_zmq_fanin(isServer, ip, port, local_threads, remote_threads, sz, rounds);
-        else if (mode == "ucx") run_ucx_fanin(isServer, ip, port, local_threads, remote_threads, sz, rounds);
-        else { std::cerr << "mode must be zmq or ucx" << std::endl; return 1; }
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
-        ++idx;
+    if (mode == "zmq") {
+        for (size_t sz : sizes) {
+            run_zmq_fanin(isServer, ip, port, local_threads, remote_threads, sz, rounds);
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+    } else if (mode == "ucx") {
+        run_ucx_fanin_all(isServer, ip, port, local_threads, remote_threads, sizes, rounds);
+    } else {
+        std::cerr << "mode must be zmq or ucx" << std::endl; return 1;
     }
     return 0;
 }
