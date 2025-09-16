@@ -62,6 +62,9 @@ def main(csv_path: str):
                 mean_val = pdata.mean()
                 plt.axhline(mean_val, color=color, linestyle="--", linewidth=1.5, alpha=0.8)
                 mean_handles.append(Line2D([0], [0], color=color, linestyle="--", linewidth=1.5, label=f"{pattern} mean"))
+                # Label the mean value at the right edge
+                plt.annotate(f"{mean_val:.1f} usec", xy=(1.0, mean_val), xycoords=("axes fraction", "data"),
+                             xytext=(-4, 6), textcoords="offset points", ha="right", va="bottom", color=color, fontsize=8)
 
         # Legend: bar colors for transports + dashed lines for means (place above)
         bar_handles = [
@@ -109,6 +112,9 @@ def main(csv_path: str):
             if not pdata.empty:
                 mean_val = pdata.mean()
                 ax.axhline(mean_val, color=color, linestyle="--", linewidth=1.0, alpha=0.8)
+                # Label the mean value at the right edge of each subplot
+                ax.annotate(f"{mean_val:.1f} usec", xy=(1.0, mean_val), xycoords=("axes fraction", "data"),
+                            xytext=(-4, 5), textcoords="offset points", ha="right", va="bottom", color=color, fontsize=7)
     # Figure-level legend with bar colors (single legend for all subplots)
     fig.legend(
         handles=[
