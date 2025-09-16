@@ -72,7 +72,12 @@ void FanInQueue::start(size_t num_endpoints) {
             if (cfd < 0) throw std::runtime_error("socket failed");
             sockaddr_in addr{}; addr.sin_family = AF_INET; addr.sin_port = htons(tcp_port_);
             inet_pton(AF_INET, ip_.c_str(), &addr.sin_addr);
-            if (connect(cfd, (sockaddr*)&addr, sizeof(addr)) != 0) throw std::runtime_error("connect failed");
+            // retry connect until server is ready
+            int attempts = 0; const int kMaxAttempts = 200; // ~20s
+            while (connect(cfd, (sockaddr*)&addr, sizeof(addr)) != 0) {
+                if (++attempts >= kMaxAttempts) { close(cfd); close(fd); throw std::runtime_error("connect failed"); }
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
 
             // exchange worker addresses
             ucp_address_t* my_addr{}; size_t my_len{};
@@ -131,8 +136,14 @@ void FanInQueue::progressThread() {
             ucp_worker_progress(worker_);
             continue;
         }
-        // Block until one message arrives
-        wait_req(worker_, req);
+        // Wait with ability to cancel on shutdown
+        for (;;) {
+            ucs_status_t st = ucp_request_check_status(req);
+            if (st == UCS_OK) break;
+            if (!running_.load()) { ucp_request_cancel(worker_, req); }
+            ucp_worker_progress(worker_);
+        }
+        ucp_request_free(req);
         // Push exactly msg size; assume fixed size was agreed upon by sender threads.
         Message m; m.data = std::move(buf);
         {
@@ -176,13 +187,15 @@ bool FanInQueue::dequeue(Message& out) {
 
 void FanInQueue::stop() {
     if (!running_.exchange(false)) return;
+    // Close listener first to unblock accept()
+    if (tcp_listen_fd_ >= 0) { close(tcp_listen_fd_); tcp_listen_fd_ = -1; }
     if (accept_thr_.joinable()) accept_thr_.join();
     if (progress_thr_.joinable()) progress_thr_.join();
     for (auto ep : eps_) ucp_ep_destroy(ep);
     eps_.clear();
     if (worker_) { ucp_worker_destroy(worker_); worker_ = nullptr; }
     if (context_) { ucp_cleanup(context_); context_ = nullptr; }
-    if (tcp_listen_fd_ >= 0) { close(tcp_listen_fd_); tcp_listen_fd_ = -1; }
+    // listener already closed above
 }
 
 size_t FanInQueue::endpoint_count() const { return eps_.size(); }
