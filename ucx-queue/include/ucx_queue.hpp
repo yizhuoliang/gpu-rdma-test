@@ -30,8 +30,7 @@ public:
     void send(size_t ep_index, const void* buf, size_t len, uint64_t tag = 0xABCDEF);
 
     // Server-only: create N local endpoints to self (UCX self/shm transports)
-    // Returns the base index into the endpoint array for the first created endpoint
-    size_t create_local_endpoints(size_t count);
+    void create_local_endpoints(size_t count);
 
     // Introspection
     size_t endpoint_count() const;
@@ -57,7 +56,6 @@ private:
     ucp_worker_h worker_ = nullptr;
 
     std::vector<ucp_ep_h> eps_;
-    mutable std::mutex eps_mu_;
 
     std::thread progress_thr_;
     std::thread accept_thr_;

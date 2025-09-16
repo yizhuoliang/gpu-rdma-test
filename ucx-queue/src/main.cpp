@@ -57,7 +57,7 @@ static void run_ucx_fanin(bool isServer, const char* ip, int port, size_t num_lo
         FanInQueue q("server", ip, port);
         q.start(num_local_senders + num_remote_senders);
         // Create local UCX endpoints to self first; UCX should pick sm/self for IPC
-        size_t local_base = q.create_local_endpoints(num_local_senders);
+        q.create_local_endpoints(num_local_senders);
         // Then wait until all remote endpoints are accepted as well
         while (q.endpoint_count() < (num_local_senders + num_remote_senders)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -67,7 +67,7 @@ static void run_ucx_fanin(bool isServer, const char* ip, int port, size_t num_lo
             local.emplace_back([&, i]{
                 std::vector<uint8_t> payload(msg_bytes, 0x6B);
                 for (int r = 0; r < rounds; ++r) {
-                    q.send(local_base + i, payload.data(), payload.size());
+                    q.send(i, payload.data(), payload.size());
                 }
             });
         }
