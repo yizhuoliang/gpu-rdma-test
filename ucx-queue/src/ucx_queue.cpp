@@ -78,8 +78,8 @@ void FanInQueue::start(size_t num_endpoints) {
             ucp_address_t* my_addr{}; size_t my_len{};
             if (ucp_worker_get_address(worker_, &my_addr, &my_len) != UCS_OK) throw std::runtime_error("get_address failed");
             uint32_t l = htonl((uint32_t)my_len);
-            if (send(cfd, &l, sizeof(l), 0) != (ssize_t)sizeof(l)) throw std::runtime_error("send len failed");
-            if (send(cfd, my_addr, my_len, 0) != (ssize_t)my_len) throw std::runtime_error("send addr failed");
+            if (::send(cfd, &l, sizeof(l), 0) != (ssize_t)sizeof(l)) throw std::runtime_error("send len failed");
+            if (::send(cfd, my_addr, my_len, 0) != (ssize_t)my_len) throw std::runtime_error("send addr failed");
             ucp_worker_release_address(worker_, my_addr);
 
             uint32_t peer_l{}; if (recv(cfd, &peer_l, sizeof(peer_l), MSG_WAITALL) != (ssize_t)sizeof(peer_l)) throw std::runtime_error("recv len failed");
@@ -107,8 +107,8 @@ void FanInQueue::acceptThread() {
         // send our address
         ucp_address_t* my_addr{}; size_t my_len{}; if (ucp_worker_get_address(worker_, &my_addr, &my_len) != UCS_OK) { close(cfd); continue; }
         uint32_t l = htonl((uint32_t)my_len);
-        send(cfd, &l, sizeof(l), 0);
-        send(cfd, my_addr, my_len, 0);
+        ::send(cfd, &l, sizeof(l), 0);
+        ::send(cfd, my_addr, my_len, 0);
         ucp_worker_release_address(worker_, my_addr);
         // create endpoint
         ucp_ep_params_t ep{}; ep.field_mask = UCP_EP_PARAM_FIELD_REMOTE_ADDRESS; ep.address = (ucp_address_t*)peer.data();
