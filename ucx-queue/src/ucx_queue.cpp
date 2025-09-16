@@ -136,14 +136,20 @@ void FanInQueue::progressThread() {
             ucp_worker_progress(worker_);
             continue;
         }
-        // Wait with ability to cancel on shutdown
-        for (;;) {
-            ucs_status_t st = ucp_request_check_status(req);
-            if (st == UCS_OK) break;
-            if (!running_.load()) { ucp_request_cancel(worker_, req); }
-            ucp_worker_progress(worker_);
+        if (!UCS_PTR_IS_PTR(req)) {
+            // Immediate completion
+            ucs_status_t st = UCS_PTR_STATUS(req);
+            if (st != UCS_OK) { ucp_worker_progress(worker_); continue; }
+        } else {
+            // Wait with ability to cancel on shutdown
+            for (;;) {
+                ucs_status_t st = ucp_request_check_status(req);
+                if (st == UCS_OK) break;
+                if (!running_.load()) { ucp_request_cancel(worker_, req); }
+                ucp_worker_progress(worker_);
+            }
+            ucp_request_free(req);
         }
-        ucp_request_free(req);
         // Push exactly msg size; assume fixed size was agreed upon by sender threads.
         Message m; m.data = std::move(buf);
         {
