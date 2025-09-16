@@ -56,6 +56,8 @@ private:
     ucp_worker_h worker_ = nullptr;
 
     std::vector<ucp_ep_h> eps_;
+    std::atomic<size_t> ep_count_{0};
+    std::mutex eps_mu_;
 
     std::thread progress_thr_;
     std::thread accept_thr_;
