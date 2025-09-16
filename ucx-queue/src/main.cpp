@@ -6,6 +6,9 @@
 #include <vector>
 #include <cstring>
 #include <atomic>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <unistd.h>
 
 using clock_type = std::chrono::high_resolution_clock;
 
@@ -55,18 +58,35 @@ static void run_zmq_fanin(bool isServer, const char* ip, int port, size_t num_lo
 static void run_zmq_fanin_all(bool isServer, const char* ip, int port, size_t num_local_senders, size_t num_remote_senders, const std::vector<size_t>& sizes, int rounds) {
     zmq::context_t ctx(1);
     std::string endpoint = std::string("tcp://") + ip + ":" + std::to_string(port);
+    // control channel (port+1) to synchronize rounds across server/client
+    int ctrl_fd = -1;
+    int ctrl_port = port + 1;
+    if (isServer) {
+        int lfd = ::socket(AF_INET, SOCK_STREAM, 0);
+        int yes = 1; setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+        sockaddr_in addr{}; addr.sin_family = AF_INET; addr.sin_port = htons(ctrl_port); inet_pton(AF_INET, ip, &addr.sin_addr);
+        bind(lfd, (sockaddr*)&addr, sizeof(addr)); listen(lfd, 1); ctrl_fd = accept(lfd, nullptr, nullptr); close(lfd);
+    } else {
+        ctrl_fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        sockaddr_in addr{}; addr.sin_family = AF_INET; addr.sin_port = htons(ctrl_port); inet_pton(AF_INET, ip, &addr.sin_addr);
+        while (connect(ctrl_fd, (sockaddr*)&addr, sizeof(addr)) != 0) { std::this_thread::sleep_for(std::chrono::milliseconds(50)); }
+    }
     if (isServer) {
         zmq::socket_t pull(ctx, ZMQ_PULL);
         pull.bind(endpoint);
         // persistent local senders
         std::atomic<size_t> size_index{0};
         std::atomic<bool> done{false};
+        std::atomic<uint64_t> round_id{0};
         std::vector<std::thread> local;
         for (size_t i = 0; i < num_local_senders; ++i) {
             local.emplace_back([&, i]{
                 zmq::socket_t push(ctx, ZMQ_PUSH);
                 push.connect(endpoint);
+                uint64_t seen = round_id.load();
                 while (!done.load()) {
+                    while (round_id.load() == seen && !done.load()) std::this_thread::yield();
+                    seen = round_id.load();
                     size_t idx = size_index.load();
                     if (idx >= sizes.size()) break;
                     size_t msg_bytes = sizes[idx];
@@ -74,12 +94,13 @@ static void run_zmq_fanin_all(bool isServer, const char* ip, int port, size_t nu
                     for (int r = 0; r < rounds; ++r) {
                         push.send(zmq::buffer(payload), zmq::send_flags::none);
                     }
-                    while (size_index.load() == idx && !done.load()) std::this_thread::yield();
                 }
             });
         }
         for (size_t si = 0; si < sizes.size(); ++si) {
             size_index.store(si);
+            uint32_t token = (uint32_t)si; ::send(ctrl_fd, &token, sizeof(token), 0);
+            round_id.fetch_add(1, std::memory_order_acq_rel);
             size_t expected = (num_local_senders + num_remote_senders) * (size_t)rounds;
             auto t0 = clock_type::now();
             size_t got = 0; zmq::message_t msg;
@@ -89,16 +110,21 @@ static void run_zmq_fanin_all(bool isServer, const char* ip, int port, size_t nu
         }
         done.store(true);
         for (auto& th : local) th.join();
+        if (ctrl_fd >= 0) close(ctrl_fd);
     } else {
         // persistent remote senders
         std::atomic<size_t> size_index{0};
         std::atomic<bool> done{false};
+        std::atomic<uint64_t> round_id{0};
         std::vector<std::thread> remote;
         for (size_t i = 0; i < num_remote_senders; ++i) {
             remote.emplace_back([&, i]{
                 zmq::socket_t push(ctx, ZMQ_PUSH);
                 push.connect(endpoint);
+                uint64_t seen = round_id.load();
                 while (!done.load()) {
+                    while (round_id.load() == seen && !done.load()) std::this_thread::yield();
+                    seen = round_id.load();
                     size_t idx = size_index.load();
                     if (idx >= sizes.size()) break;
                     size_t msg_bytes = sizes[idx];
@@ -106,16 +132,17 @@ static void run_zmq_fanin_all(bool isServer, const char* ip, int port, size_t nu
                     for (int r = 0; r < rounds; ++r) {
                         push.send(zmq::buffer(payload), zmq::send_flags::none);
                     }
-                    while (size_index.load() == idx && !done.load()) std::this_thread::yield();
                 }
             });
         }
         for (size_t si = 0; si < sizes.size(); ++si) {
-            size_index.store(si);
-            std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+            uint32_t token{}; if (recv(ctrl_fd, &token, sizeof(token), MSG_WAITALL) != (ssize_t)sizeof(token)) break;
+            size_index.store(token);
+            round_id.fetch_add(1, std::memory_order_acq_rel);
         }
         done.store(true);
         for (auto& th : remote) th.join();
+        if (ctrl_fd >= 0) close(ctrl_fd);
     }
 }
 
@@ -126,14 +153,23 @@ static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t nu
         q.start(num_local_senders + num_remote_senders);
         size_t local_base = q.create_local_endpoints(num_local_senders);
         while (q.endpoint_count() < (num_local_senders + num_remote_senders)) { std::this_thread::sleep_for(std::chrono::milliseconds(50)); }
+        // control channel on port+1
+        int lfd = ::socket(AF_INET, SOCK_STREAM, 0);
+        int yes = 1; setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+        int ctrl_port = port + 1; sockaddr_in addr{}; addr.sin_family = AF_INET; addr.sin_port = htons(ctrl_port); inet_pton(AF_INET, ip, &addr.sin_addr);
+        bind(lfd, (sockaddr*)&addr, sizeof(addr)); listen(lfd, 1); int ctrl_fd = accept(lfd, nullptr, nullptr); close(lfd);
 
         // Persistent local sender threads iterate over sizes
         std::atomic<size_t> size_index{0};
         std::atomic<bool> done{false};
+        std::atomic<uint64_t> round_id{0};
         std::vector<std::thread> local;
         for (size_t i = 0; i < num_local_senders; ++i) {
             local.emplace_back([&, i]{
+                uint64_t seen = round_id.load();
                 while (!done.load()) {
+                    while (round_id.load() == seen && !done.load()) std::this_thread::yield();
+                    seen = round_id.load();
                     size_t idx = size_index.load();
                     if (idx >= sizes.size()) break;
                     size_t msg_bytes = sizes[idx];
@@ -141,14 +177,14 @@ static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t nu
                     for (int r = 0; r < rounds; ++r) {
                         q.send(local_base + i, payload.data(), payload.size());
                     }
-                    // Wait for next size
-                    while (size_index.load() == idx && !done.load()) std::this_thread::yield();
                 }
             });
         }
 
         for (size_t si = 0; si < sizes.size(); ++si) {
             size_index.store(si);
+            uint32_t token = (uint32_t)si; ::send(ctrl_fd, &token, sizeof(token), 0);
+            round_id.fetch_add(1, std::memory_order_acq_rel);
             size_t expected = (num_local_senders + num_remote_senders) * (size_t)rounds;
             auto t0 = clock_type::now();
             size_t got = 0; Message m;
@@ -158,19 +194,27 @@ static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t nu
         }
         done.store(true);
         for (auto& th : local) th.join();
+        if (ctrl_fd >= 0) close(ctrl_fd);
         q.stop();
     } else {
         FanInQueue q("client", ip, port);
         q.start(num_remote_senders);
         while (q.endpoint_count() < num_remote_senders) { std::this_thread::sleep_for(std::chrono::milliseconds(50)); }
+        int ctrl_fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        int ctrl_port = port + 1; sockaddr_in addr{}; addr.sin_family = AF_INET; addr.sin_port = htons(ctrl_port); inet_pton(AF_INET, ip, &addr.sin_addr);
+        while (connect(ctrl_fd, (sockaddr*)&addr, sizeof(addr)) != 0) { std::this_thread::sleep_for(std::chrono::milliseconds(50)); }
 
         // Persistent remote sender threads iterate over sizes
         std::atomic<size_t> size_index{0};
         std::atomic<bool> done{false};
+        std::atomic<uint64_t> round_id{0};
         std::vector<std::thread> remote;
         for (size_t i = 0; i < num_remote_senders; ++i) {
             remote.emplace_back([&, i]{
+                uint64_t seen = round_id.load();
                 while (!done.load()) {
+                    while (round_id.load() == seen && !done.load()) std::this_thread::yield();
+                    seen = round_id.load();
                     size_t idx = size_index.load();
                     if (idx >= sizes.size()) break;
                     size_t msg_bytes = sizes[idx];
@@ -178,19 +222,18 @@ static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t nu
                     for (int r = 0; r < rounds; ++r) {
                         q.send(i, payload.data(), payload.size());
                     }
-                    // Wait for next size
-                    while (size_index.load() == idx && !done.load()) std::this_thread::yield();
                 }
             });
         }
 
         for (size_t si = 0; si < sizes.size(); ++si) {
-            size_index.store(si);
-            // Client just sends; give server time to drain
-            std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+            uint32_t token{}; if (recv(ctrl_fd, &token, sizeof(token), MSG_WAITALL) != (ssize_t)sizeof(token)) break;
+            size_index.store(token);
+            round_id.fetch_add(1, std::memory_order_acq_rel);
         }
         done.store(true);
         for (auto& th : remote) th.join();
+        if (ctrl_fd >= 0) close(ctrl_fd);
         q.stop();
     }
 }
