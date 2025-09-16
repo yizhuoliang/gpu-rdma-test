@@ -131,9 +131,9 @@ void FanInQueue::progressThread() {
             ucp_worker_progress(worker_);
             continue;
         }
+        // Block until one message arrives
         wait_req(worker_, req);
-        // Note: recv_nbx fills the buffer fully; higher-level protocols should prefix size.
-        // For simplicity assume fixed-size messages are used.
+        // Push exactly msg size; assume fixed size was agreed upon by sender threads.
         Message m; m.data = std::move(buf);
         {
             std::lock_guard<std::mutex> lg(q_mu_);
@@ -184,6 +184,8 @@ void FanInQueue::stop() {
     if (context_) { ucp_cleanup(context_); context_ = nullptr; }
     if (tcp_listen_fd_ >= 0) { close(tcp_listen_fd_); tcp_listen_fd_ = -1; }
 }
+
+size_t FanInQueue::endpoint_count() const { return eps_.size(); }
 
 } // namespace ucxq
 

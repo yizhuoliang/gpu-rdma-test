@@ -56,8 +56,12 @@ static void run_ucx_fanin(bool isServer, const char* ip, int port, size_t num_lo
     if (isServer) {
         FanInQueue q("server", ip, port);
         q.start(num_local_senders + num_remote_senders);
-        // Create local UCX endpoints to self; UCX should pick sm/self for IPC
+        // Create local UCX endpoints to self first; UCX should pick sm/self for IPC
         q.create_local_endpoints(num_local_senders);
+        // Then wait until all remote endpoints are accepted as well
+        while (q.endpoint_count() < (num_local_senders + num_remote_senders)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
         std::vector<std::thread> local;
         for (size_t i = 0; i < num_local_senders; ++i) {
             local.emplace_back([&, i]{
@@ -79,6 +83,10 @@ static void run_ucx_fanin(bool isServer, const char* ip, int port, size_t num_lo
     } else {
         FanInQueue q("client", ip, port);
         q.start(num_remote_senders);
+        // ensure endpoints established locally
+        while (q.endpoint_count() < num_remote_senders) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
         // remote senders
         std::vector<std::thread> remote;
         for (size_t i = 0; i < num_remote_senders; ++i) {
@@ -103,7 +111,7 @@ int main(int argc, char** argv) {
     size_t local_threads = 16;
     size_t remote_threads = 16;
     const std::vector<size_t> sizes = {1024, 8192, 65536, 131072, 1048576};
-    int rounds = 1000;
+    int rounds = 20;
 
     for (size_t sz : sizes) {
         if (mode == "zmq") run_zmq_fanin(isServer, ip, port, local_threads, remote_threads, sz, rounds);

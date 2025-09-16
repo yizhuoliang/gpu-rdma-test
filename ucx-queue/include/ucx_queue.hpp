@@ -32,6 +32,9 @@ public:
     // Server-only: create N local endpoints to self (UCX self/shm transports)
     void create_local_endpoints(size_t count);
 
+    // Introspection
+    size_t endpoint_count() const;
+
     // Server: blocking dequeue; returns false on shutdown
     bool dequeue(Message& out);
 
