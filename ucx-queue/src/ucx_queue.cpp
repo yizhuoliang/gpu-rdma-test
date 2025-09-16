@@ -94,7 +94,10 @@ void FanInQueue::start(size_t num_endpoints) {
             // create endpoint
             ucp_ep_params_t ep{}; ep.field_mask = UCP_EP_PARAM_FIELD_REMOTE_ADDRESS; ep.address = (ucp_address_t*)peer.data();
             ucp_ep_h eph{}; if (ucp_ep_create(worker_, &ep, &eph) != UCS_OK) throw std::runtime_error("ep create failed");
-            eps_.push_back(eph);
+            {
+                std::lock_guard<std::mutex> lg(eps_mu_);
+                eps_.push_back(eph);
+            }
             close(cfd);
         }
         close(fd);
@@ -118,7 +121,10 @@ void FanInQueue::acceptThread() {
         // create endpoint
         ucp_ep_params_t ep{}; ep.field_mask = UCP_EP_PARAM_FIELD_REMOTE_ADDRESS; ep.address = (ucp_address_t*)peer.data();
         ucp_ep_h eph{}; if (ucp_ep_create(worker_, &ep, &eph) != UCS_OK) { close(cfd); continue; }
-        eps_.push_back(eph);
+        {
+            std::lock_guard<std::mutex> lg(eps_mu_);
+            eps_.push_back(eph);
+        }
         close(cfd);
     }
 }
@@ -160,22 +166,34 @@ void FanInQueue::progressThread() {
 }
 
 void FanInQueue::send(size_t ep_index, const void* buf, size_t len, uint64_t tag) {
-    if (ep_index >= eps_.size()) return;
+    ucp_ep_h ep_handle{};
+    {
+        std::lock_guard<std::mutex> lg(eps_mu_);
+        if (ep_index >= eps_.size()) return;
+        ep_handle = eps_[ep_index];
+    }
     ucp_request_param_t prm{}; prm.op_attr_mask = 0;
-    void* req = ucp_tag_send_nbx(eps_[ep_index], buf, len, tag, &prm);
+    void* req = ucp_tag_send_nbx(ep_handle, buf, len, tag, &prm);
     wait_req(worker_, req);
 }
 
-void FanInQueue::create_local_endpoints(size_t count) {
+size_t FanInQueue::create_local_endpoints(size_t count) {
     // Create UCX endpoints to self using the worker address; UCX will use self/shm transports
     ucp_address_t* my_addr{}; size_t my_len{};
     if (ucp_worker_get_address(worker_, &my_addr, &my_len) != UCS_OK) throw std::runtime_error("get_address failed");
-    for (size_t i = 0; i < count; ++i) {
-        ucp_ep_params_t ep{}; ep.field_mask = UCP_EP_PARAM_FIELD_REMOTE_ADDRESS; ep.address = my_addr;
-        ucp_ep_h eph{}; if (ucp_ep_create(worker_, &ep, &eph) != UCS_OK) { ucp_worker_release_address(worker_, my_addr); throw std::runtime_error("ep create failed"); }
-        eps_.push_back(eph);
+    size_t base_index = 0;
+    {
+        std::lock_guard<std::mutex> lg(eps_mu_);
+        base_index = eps_.size();
+        eps_.reserve(eps_.size() + count);
+        for (size_t i = 0; i < count; ++i) {
+            ucp_ep_params_t ep{}; ep.field_mask = UCP_EP_PARAM_FIELD_REMOTE_ADDRESS; ep.address = my_addr;
+            ucp_ep_h eph{}; if (ucp_ep_create(worker_, &ep, &eph) != UCS_OK) { ucp_worker_release_address(worker_, my_addr); throw std::runtime_error("ep create failed"); }
+            eps_.push_back(eph);
+        }
     }
     ucp_worker_release_address(worker_, my_addr);
+    return base_index;
 }
 
 bool FanInQueue::dequeue(Message& out) {
@@ -197,14 +215,17 @@ void FanInQueue::stop() {
     if (tcp_listen_fd_ >= 0) { close(tcp_listen_fd_); tcp_listen_fd_ = -1; }
     if (accept_thr_.joinable()) accept_thr_.join();
     if (progress_thr_.joinable()) progress_thr_.join();
-    for (auto ep : eps_) ucp_ep_destroy(ep);
-    eps_.clear();
+    {
+        std::lock_guard<std::mutex> lg(eps_mu_);
+        for (auto ep : eps_) ucp_ep_destroy(ep);
+        eps_.clear();
+    }
     if (worker_) { ucp_worker_destroy(worker_); worker_ = nullptr; }
     if (context_) { ucp_cleanup(context_); context_ = nullptr; }
     // listener already closed above
 }
 
-size_t FanInQueue::endpoint_count() const { return eps_.size(); }
+size_t FanInQueue::endpoint_count() const { std::lock_guard<std::mutex> lg(eps_mu_); return eps_.size(); }
 
 } // namespace ucxq
 
