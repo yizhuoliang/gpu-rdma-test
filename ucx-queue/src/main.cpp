@@ -246,7 +246,7 @@ int main(int argc, char** argv) {
     int port = 61000;
     size_t local_threads = 16;
     size_t remote_threads = 16;
-    const std::vector<size_t> sizes = {1024, 8192, 65536, 131072, 1048576};
+    const std::vector<size_t> sizes = {131072, 8192, 65536, 131072, 1048576};
     int rounds = 20;
 
     if (mode == "zmq") {
