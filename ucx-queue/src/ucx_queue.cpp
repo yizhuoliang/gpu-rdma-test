@@ -5,8 +5,14 @@
 #include <unistd.h>
 #include <cstring>
 #include <iostream>
+#include <chrono>
 
 namespace ucxq {
+
+struct RecvCtx {
+    FanInQueue* self;
+    std::vector<uint8_t>* buf;
+};
 
 static void wait_req(ucp_worker_h w, void* req) {
     if (req == nullptr) return;
@@ -141,34 +147,69 @@ void FanInQueue::acceptThread() {
 void FanInQueue::progressThread() {
     const uint64_t TAG = 0xABCDEF;
     while (running_.load()) {
-        // Batch-drain a few messages per loop when available
-        int drained = 0;
-        for (; drained < 32 && running_.load(); ++drained) {
+        // Post receives for any available messages (bounded per iteration)
+        int posted = 0;
+        for (; posted < 64 && running_.load(); ++posted) {
             ucp_tag_recv_info_t info{};
             ucp_tag_message_h msg = ucp_tag_probe_nb(worker_, TAG, (uint64_t)-1, 1, &info);
             if (msg == nullptr) break;
-            std::vector<uint8_t> buf(info.length);
-            ucp_request_param_t prm{}; prm.op_attr_mask = 0;
-            void* req = ucp_tag_msg_recv_nbx(worker_, buf.data(), buf.size(), msg, &prm);
-            if (UCS_PTR_IS_ERR(req)) { ucp_worker_progress(worker_); continue; }
-            if (UCS_PTR_IS_PTR(req)) {
-                while (ucp_request_check_status(req) == UCS_INPROGRESS) {
-                    if (!running_.load()) { ucp_request_cancel(worker_, req); }
-                    ucp_worker_progress(worker_);
+
+            // Allocate buffer and context for completion callback
+            auto* buf = new std::vector<uint8_t>(info.length);
+            auto* ctx = new RecvCtx{this, buf};
+
+            ucp_request_param_t prm{};
+            prm.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK | UCP_OP_ATTR_FIELD_USER_DATA;
+            prm.user_data = ctx;
+            prm.cb.recv = &FanInQueue::onRecvCb;
+
+            void* req = ucp_tag_msg_recv_nbx(worker_, buf->data(), buf->size(), msg, &prm);
+            if (UCS_PTR_IS_ERR(req)) {
+                delete buf;
+                delete ctx;
+                continue;
+            }
+            if (!UCS_PTR_IS_PTR(req)) {
+                // Completed immediately; enqueue here (callback will not be called)
+                ucs_status_t st = (ucs_status_t)UCS_PTR_STATUS(req);
+                if (st == UCS_OK) {
+                    Message m{.data = std::move(*buf)};
+                    // Busy retry a few times if full to avoid dropping
+                    for (int i = 0; i < 64; ++i) {
+                        if (q_.try_enqueue(std::move(m))) { q_cv_.notify_one(); break; }
+                        std::this_thread::yield();
+                    }
                 }
-                ucp_request_free(req);
+                delete buf;
+                delete ctx;
             }
-            {
-                std::lock_guard<std::mutex> lg(q_mu_);
-                q_.push(Message{.data = std::move(buf)});
-            }
-            q_cv_.notify_one();
         }
-        // Make progress when nothing was drained
-        if (drained == 0) {
-            ucp_worker_progress(worker_);
+
+        // Drive completions
+        if (ucp_worker_progress(worker_) == 0) {
             std::this_thread::yield();
         }
+    }
+}
+
+void FanInQueue::onRecvCb(void* request, ucs_status_t status, const ucp_tag_recv_info_t* info, void* user_data) {
+    auto* ctx = static_cast<RecvCtx*>(user_data);
+    FanInQueue* self = ctx->self;
+    std::vector<uint8_t>* buf = ctx->buf;
+
+    if (status == UCS_OK) {
+        Message m{.data = std::move(*buf)};
+        // Enqueue with minimal contention; spin briefly if full
+        for (int i = 0; i < 64; ++i) {
+            if (self->q_.try_enqueue(std::move(m))) { self->q_cv_.notify_one(); break; }
+            std::this_thread::yield();
+        }
+    }
+
+    delete buf;
+    delete ctx;
+    if (UCS_PTR_IS_PTR(request)) {
+        ucp_request_free(request);
     }
 }
 
@@ -208,14 +249,17 @@ size_t FanInQueue::create_local_endpoints(size_t count) {
 }
 
 bool FanInQueue::dequeue(Message& out) {
-    std::unique_lock<std::mutex> lk(q_mu_);
-    q_cv_.wait(lk, [&]{ return !q_.empty() || !running_.load(); });
-    if (!q_.empty()) { out = std::move(q_.front()); q_.pop(); return true; }
-    return false;
+    for (;;) {
+        if (q_.try_dequeue(out)) return true;
+        if (!running_.load()) return false;
+        std::unique_lock<std::mutex> lk(q_wait_mu_);
+        q_cv_.wait_for(lk, std::chrono::milliseconds(50));
+    }
 }
 
 void FanInQueue::stop() {
     if (!running_.exchange(false)) return;
+    q_cv_.notify_all();
     // Close listener first to unblock accept()
     if (tcp_listen_fd_ >= 0) { close(tcp_listen_fd_); tcp_listen_fd_ = -1; }
     if (accept_thr_.joinable()) accept_thr_.join();
