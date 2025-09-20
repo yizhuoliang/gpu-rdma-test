@@ -61,27 +61,19 @@ private:
     std::atomic<size_t> tail_;
 };
 
-class FanInQueue {
+class FanInQueueReceiver {
 public:
-    // role: "server" or "client"; server binds and listens; client connects
-    FanInQueue(const std::string& role, const std::string& ip, int tcp_port);
-    ~FanInQueue();
+    FanInQueueReceiver(const std::string& ip, int tcp_port);
+    ~FanInQueueReceiver();
 
-    // Server: start listening; Client: connect N endpoints (one per sender thread)
-    void start(size_t num_endpoints);
+    // Start listening and accepting remote endpoints
+    void start();
 
-    // Client: send message on a specific endpoint index (0..num_endpoints-1)
-    void send(size_t ep_index, const void* buf, size_t len, uint64_t tag = 0xABCDEF);
-
-    // Server-only: create N local endpoints to self (UCX self/shm transports).
-    // Returns the base index in `eps_` where these endpoints were appended contiguously.
-    size_t create_local_endpoints(size_t count);
+    // Blocking dequeue; returns false on shutdown
+    bool dequeue(Message& out);
 
     // Introspection
     size_t endpoint_count() const;
-
-    // Server: blocking dequeue; returns false on shutdown
-    bool dequeue(Message& out);
 
     // Shutdown and cleanup
     void stop();
@@ -95,7 +87,6 @@ private:
     int tcp_listen_fd_ = -1;
     int tcp_port_ = 0;
     std::string ip_;
-    std::string role_;
 
     // UCX context/worker
     ucp_context_h context_ = nullptr;
@@ -110,7 +101,33 @@ private:
     std::atomic<bool> running_{false};
 
     // Lock-free SPSC queue (producer: progress thread; consumer: user thread)
-    SpscRing<Message> q_{1024}; // default capacity (must be power-of-two)
+    SpscRing<Message> q_{1024};
+};
+
+class FanInQueueSender {
+public:
+    FanInQueueSender(const std::string& ip, int tcp_port);
+    ~FanInQueueSender();
+
+    // Connect a single endpoint to the receiver via TCP OOB
+    void start();
+
+    // Send message on this sender's endpoint
+    void send(const void* buf, size_t len, uint64_t tag = 0xABCDEF);
+
+    size_t endpoint_count() const;
+
+    void stop();
+
+private:
+    // TCP OOB
+    int tcp_port_ = 0;
+    std::string ip_;
+
+    // UCX
+    ucp_context_h context_ = nullptr;
+    ucp_worker_h worker_ = nullptr;
+    ucp_ep_h ep_ = nullptr;
 };
 
 } // namespace ucxq

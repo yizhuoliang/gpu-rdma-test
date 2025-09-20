@@ -149,10 +149,8 @@ static void run_zmq_fanin_all(bool isServer, const char* ip, int port, size_t nu
 static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t num_local_senders, size_t num_remote_senders, const std::vector<size_t>& sizes, int rounds) {
     using namespace ucxq;
     if (isServer) {
-        FanInQueue q("server", ip, port);
-        q.start(num_local_senders + num_remote_senders);
-        size_t local_base = q.create_local_endpoints(num_local_senders);
-        while (q.endpoint_count() < (num_local_senders + num_remote_senders)) { std::this_thread::sleep_for(std::chrono::milliseconds(50)); }
+        FanInQueueReceiver q(ip, port);
+        q.start();
         // control channel on port+1
         int lfd = ::socket(AF_INET, SOCK_STREAM, 0);
         int yes = 1; setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
@@ -166,6 +164,8 @@ static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t nu
         std::vector<std::thread> local;
         for (size_t i = 0; i < num_local_senders; ++i) {
             local.emplace_back([&, i]{
+                FanInQueueSender sender(ip, port);
+                sender.start();
                 uint64_t seen = round_id.load();
                 while (!done.load()) {
                     while (round_id.load() == seen && !done.load()) std::this_thread::yield();
@@ -175,9 +175,10 @@ static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t nu
                     size_t msg_bytes = sizes[idx];
                     std::vector<uint8_t> payload(msg_bytes, 0x6B);
                     for (int r = 0; r < rounds; ++r) {
-                        q.send(local_base + i, payload.data(), payload.size());
+                        sender.send(payload.data(), payload.size());
                     }
                 }
+                sender.stop();
             });
         }
 
@@ -197,9 +198,7 @@ static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t nu
         if (ctrl_fd >= 0) close(ctrl_fd);
         q.stop();
     } else {
-        FanInQueue q("client", ip, port);
-        q.start(num_remote_senders);
-        while (q.endpoint_count() < num_remote_senders) { std::this_thread::sleep_for(std::chrono::milliseconds(50)); }
+        // remote: each thread owns its own sender
         int ctrl_fd = ::socket(AF_INET, SOCK_STREAM, 0);
         int ctrl_port = port + 1; sockaddr_in addr{}; addr.sin_family = AF_INET; addr.sin_port = htons(ctrl_port); inet_pton(AF_INET, ip, &addr.sin_addr);
         while (connect(ctrl_fd, (sockaddr*)&addr, sizeof(addr)) != 0) { std::this_thread::sleep_for(std::chrono::milliseconds(50)); }
@@ -211,6 +210,8 @@ static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t nu
         std::vector<std::thread> remote;
         for (size_t i = 0; i < num_remote_senders; ++i) {
             remote.emplace_back([&, i]{
+                FanInQueueSender sender(ip, port);
+                sender.start();
                 uint64_t seen = round_id.load();
                 while (!done.load()) {
                     while (round_id.load() == seen && !done.load()) std::this_thread::yield();
@@ -220,9 +221,10 @@ static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t nu
                     size_t msg_bytes = sizes[idx];
                     std::vector<uint8_t> payload(msg_bytes, 0x6B);
                     for (int r = 0; r < rounds; ++r) {
-                        q.send(i, payload.data(), payload.size());
+                        sender.send(payload.data(), payload.size());
                     }
                 }
+                sender.stop();
             });
         }
 
@@ -234,7 +236,7 @@ static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t nu
         done.store(true);
         for (auto& th : remote) th.join();
         if (ctrl_fd >= 0) close(ctrl_fd);
-        q.stop();
+        // each thread stopped its own sender
     }
 }
 
