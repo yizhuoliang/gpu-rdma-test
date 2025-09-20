@@ -165,11 +165,16 @@ static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t nu
         std::atomic<bool> done{false};
         std::atomic<uint64_t> round_id{0};
         std::vector<std::thread> local;
+        std::atomic<bool> start_local{false};
+        std::atomic<size_t> started_local{0};
         for (size_t i = 0; i < num_local_senders; ++i) {
             local.emplace_back([&, i]{
                 FanInQueueSender sender(ip, port);
                 sender.start();
+                printf("Local sender %zu started\n", i);
+                while (!start_local.load()) { std::this_thread::yield(); }
                 uint64_t seen = round_id.load();
+                started_local.fetch_add(1, std::memory_order_acq_rel);
                 while (!done.load()) {
                     while (round_id.load() == seen && !done.load()) std::this_thread::yield();
                     seen = round_id.load();
@@ -185,6 +190,11 @@ static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t nu
             });
         }
 
+        printf("Local sender threads started\n");
+        // Unleash local senders and ensure all captured initial round_id before first round
+        start_local.store(true, std::memory_order_release);
+        while (started_local.load(std::memory_order_acquire) < num_local_senders) { std::this_thread::yield(); }
+        
         for (size_t si = 0; si < sizes.size(); ++si) {
             size_index.store(si);
             uint32_t token = (uint32_t)si; ::send(ctrl_fd, &token, sizeof(token), 0);
@@ -215,6 +225,7 @@ static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t nu
             remote.emplace_back([&, i]{
                 FanInQueueSender sender(ip, port);
                 sender.start();
+                printf("Remote sender %zu started\n", i);
                 uint64_t seen = round_id.load();
                 while (!done.load()) {
                     while (round_id.load() == seen && !done.load()) std::this_thread::yield();
@@ -239,7 +250,6 @@ static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t nu
         done.store(true);
         for (auto& th : remote) th.join();
         if (ctrl_fd >= 0) close(ctrl_fd);
-        // each thread stopped its own sender
     }
 }
 
