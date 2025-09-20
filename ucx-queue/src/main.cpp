@@ -171,6 +171,7 @@ static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t nu
             local.emplace_back([&, i]{
                 FanInQueueSender sender(ip, port);
                 sender.start();
+                printf("Local sender %zu started\n", i);
                 while (!start_local.load()) { std::this_thread::yield(); }
                 uint64_t seen = round_id.load();
                 started_local.fetch_add(1, std::memory_order_acq_rel);
@@ -184,6 +185,7 @@ static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t nu
                     for (int r = 0; r < rounds; ++r) {
                         sender.send(payload.data(), payload.size());
                     }
+                    printf("Local sender %zu finished round %zu\n", i, seen);
                 }
                 sender.stop();
             });
@@ -225,6 +227,8 @@ static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t nu
         for (size_t i = 0; i < num_remote_senders; ++i) {
             remote.emplace_back([&, i]{
                 FanInQueueSender sender(ip, port);
+                sender.start();
+                printf("Remote sender %zu started\n", i);
                 while (!start_remote.load()) { std::this_thread::yield(); }
                 uint64_t seen = round_id.load();
                 started_remote.fetch_add(1, std::memory_order_acq_rel);
@@ -266,7 +270,7 @@ int main(int argc, char** argv) {
     int port = 61000;
     size_t local_threads = 16;
     size_t remote_threads = 16;
-    const std::vector<size_t> sizes = {4096, 4096, 8192, 65536, 131072, 1048576};
+    const std::vector<size_t> sizes = {4096, 8192, 65536, 131072, 1048576};
     int rounds = 20;
 
     if (mode == "zmq") {
