@@ -236,31 +236,20 @@ bool FanInQueueReceiver::dequeue(Message& out) {
 void FanInQueueReceiver::stop() {
     if (!running_.exchange(false)) return;
     // Close listener first to unblock accept()
-    if (tcp_listen_fd_ >= 0) { close(tcp_listen_fd_); tcp_listen_fd_ = -1; }
+    if (tcp_listen_fd_ >= 0) {
+        shutdown(tcp_listen_fd_, SHUT_RDWR);
+        close(tcp_listen_fd_);
+        tcp_listen_fd_ = -1;
+    }
     if (accept_thr_.joinable()) accept_thr_.join();
     if (progress_thr_.joinable()) progress_thr_.join();
-    // Close UCX endpoints gracefully/forcibly without hanging
-    std::vector<void*> close_reqs;
+    // Forceful: destroy all endpoints without waiting
     {
         std::lock_guard<std::mutex> lg(eps_mu_);
-        close_reqs.reserve(eps_.size());
         for (auto ep : eps_) {
-            ucp_request_param_t prm{};
-            prm.op_attr_mask = UCP_OP_ATTR_FIELD_FLAGS;
-            prm.flags = UCP_EP_CLOSE_FLAG_FORCE; // avoid handshake stall if peer not progressing
-            void* req = ucp_ep_close_nbx(ep, &prm);
-            if (UCS_PTR_IS_PTR(req)) {
-                close_reqs.push_back(req);
-            }
+            ucp_ep_destroy(ep);
         }
         eps_.clear();
-    }
-    // Progress endpoint close requests
-    for (void* req : close_reqs) {
-        while (ucp_request_check_status(req) == UCS_INPROGRESS) {
-            ucp_worker_progress(worker_);
-        }
-        ucp_request_free(req);
     }
     if (worker_) { ucp_worker_destroy(worker_); worker_ = nullptr; }
     if (context_) { ucp_cleanup(context_); context_ = nullptr; }
