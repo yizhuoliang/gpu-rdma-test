@@ -235,6 +235,14 @@ static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t nu
 
             const uint64_t CTRL_TAG = 0xC0DEC0DEULL;
 
+            // Wait for client-ready ACK before starting sizes
+            {
+                uint32_t ack = 0;
+                ucp_request_param_t rp{}; rp.op_attr_mask = 0;
+                void* rreq = ucp_tag_recv_nbx(cworker, &ack, sizeof(ack), CTRL_TAG, (uint64_t)-1, &rp);
+                if (UCS_PTR_IS_PTR(rreq)) { while (ucp_request_check_status(rreq) == UCS_INPROGRESS) { ucp_worker_progress(cworker); } ucp_request_free(rreq); }
+            }
+
             for (size_t si = 0; si < sizes.size(); ++si) {
                 uint32_t token = (uint32_t)si;
                 size_t expected = (num_remote_senders) * (size_t)rounds;
@@ -292,12 +300,16 @@ static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t nu
         std::atomic<size_t> size_index{0};
         std::atomic<bool> done{false};
         std::atomic<uint64_t> round_id{0};
+        std::atomic<bool> start_remote{false};
+        std::atomic<size_t> started_remote{0};
         std::vector<std::thread> remote;
         for (size_t i = 0; i < num_remote_senders; ++i) {
             remote.emplace_back([&, i]{
                 FanInQueueSender sender(ip, port);
                 sender.start();
+                while (!start_remote.load()) { std::this_thread::yield(); }
                 uint64_t seen = round_id.load();
+                started_remote.fetch_add(1, std::memory_order_acq_rel);
                 while (!done.load()) {
                     while (round_id.load() == seen && !done.load()) std::this_thread::yield();
                     seen = round_id.load();
@@ -311,6 +323,13 @@ static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t nu
                 }
                 sender.stop();
             });
+        }
+
+        // Send READY ack after all remote threads have captured initial round_id
+        start_remote.store(true, std::memory_order_release);
+        while (started_remote.load(std::memory_order_acquire) < num_remote_senders) { std::this_thread::yield(); }
+        {
+            uint32_t ack = 0xA5A5A5A5u; ucp_request_param_t sp{}; sp.op_attr_mask = 0; ctrl_wait(cworker, ucp_tag_send_nbx(cep, &ack, sizeof(ack), CTRL_TAG, &sp));
         }
 
         // Control loop: receive tokens from server via UCX and start rounds
