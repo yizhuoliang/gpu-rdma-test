@@ -185,6 +185,7 @@ static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t nu
                     for (int r = 0; r < rounds; ++r) {
                         sender.send(payload.data(), payload.size());
                     }
+                    printf("Local sender %zu finished round %zu\n", i, seen);
                 }
                 sender.stop();
             });
@@ -220,13 +221,17 @@ static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t nu
         std::atomic<size_t> size_index{0};
         std::atomic<bool> done{false};
         std::atomic<uint64_t> round_id{0};
+        std::atomic<bool> start_remote{false};
+        std::atomic<size_t> started_remote{0};
         std::vector<std::thread> remote;
         for (size_t i = 0; i < num_remote_senders; ++i) {
             remote.emplace_back([&, i]{
                 FanInQueueSender sender(ip, port);
                 sender.start();
                 printf("Remote sender %zu started\n", i);
+                while (!start_remote.load()) { std::this_thread::yield(); }
                 uint64_t seen = round_id.load();
+                started_remote.fetch_add(1, std::memory_order_acq_rel);
                 while (!done.load()) {
                     while (round_id.load() == seen && !done.load()) std::this_thread::yield();
                     seen = round_id.load();
@@ -241,6 +246,10 @@ static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t nu
                 sender.stop();
             });
         }
+
+        // Ensure all remote sender threads captured initial round_id before processing first token
+        start_remote.store(true, std::memory_order_release);
+        while (started_remote.load(std::memory_order_acquire) < num_remote_senders) { std::this_thread::yield(); }
 
         for (size_t si = 0; si < sizes.size(); ++si) {
             uint32_t token{}; if (recv(ctrl_fd, &token, sizeof(token), MSG_WAITALL) != (ssize_t)sizeof(token)) break;
