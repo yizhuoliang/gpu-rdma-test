@@ -18,7 +18,8 @@ struct Message {
     std::vector<uint8_t> data;
 };
 
-// Single-producer single-consumer ring buffer. Capacity must be power of two.
+// Single-producer single-consumer ring buffer.
+//Capacity must be power of two, because we use bitwise AND to calculate the next index.
 template <typename T>
 class SpscRing {
 public:
@@ -110,8 +111,6 @@ private:
 
     // Lock-free SPSC queue (producer: progress thread; consumer: user thread)
     SpscRing<Message> q_{1024}; // default capacity (must be power-of-two)
-    std::condition_variable q_cv_; // for blocking wait, not used in fast path
-    std::mutex q_wait_mu_;
 };
 
 } // namespace ucxq

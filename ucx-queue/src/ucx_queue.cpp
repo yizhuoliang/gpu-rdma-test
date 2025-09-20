@@ -176,7 +176,7 @@ void FanInQueue::progressThread() {
                     Message m{.data = std::move(*buf)};
                     // Busy retry a few times if full to avoid dropping
                     for (int i = 0; i < 64; ++i) {
-                        if (q_.try_enqueue(std::move(m))) { q_cv_.notify_one(); break; }
+                        if (q_.try_enqueue(std::move(m))) { break; }
                         std::this_thread::yield();
                     }
                 }
@@ -201,7 +201,7 @@ void FanInQueue::onRecvCb(void* request, ucs_status_t status, const ucp_tag_recv
         Message m{.data = std::move(*buf)};
         // Enqueue with minimal contention; spin briefly if full
         for (int i = 0; i < 64; ++i) {
-            if (self->q_.try_enqueue(std::move(m))) { self->q_cv_.notify_one(); break; }
+            if (self->q_.try_enqueue(std::move(m))) { break; }
             std::this_thread::yield();
         }
     }
@@ -249,17 +249,17 @@ size_t FanInQueue::create_local_endpoints(size_t count) {
 }
 
 bool FanInQueue::dequeue(Message& out) {
-    for (;;) {
+    // Single consumer: spin/yield until an item arrives or shutdown
+    while (running_.load()) {
         if (q_.try_dequeue(out)) return true;
-        if (!running_.load()) return false;
-        std::unique_lock<std::mutex> lk(q_wait_mu_);
-        q_cv_.wait_for(lk, std::chrono::milliseconds(50));
+        std::this_thread::yield();
     }
+    // After shutdown, drain any remaining
+    return q_.try_dequeue(out);
 }
 
 void FanInQueue::stop() {
     if (!running_.exchange(false)) return;
-    q_cv_.notify_all();
     // Close listener first to unblock accept()
     if (tcp_listen_fd_ >= 0) { close(tcp_listen_fd_); tcp_listen_fd_ = -1; }
     if (accept_thr_.joinable()) accept_thr_.join();
