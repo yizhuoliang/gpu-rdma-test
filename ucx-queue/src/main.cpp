@@ -155,7 +155,10 @@ static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t nu
         int lfd = ::socket(AF_INET, SOCK_STREAM, 0);
         int yes = 1; setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
         int ctrl_port = port + 1; sockaddr_in addr{}; addr.sin_family = AF_INET; addr.sin_port = htons(ctrl_port); inet_pton(AF_INET, ip, &addr.sin_addr);
-        bind(lfd, (sockaddr*)&addr, sizeof(addr)); listen(lfd, 1); int ctrl_fd = accept(lfd, nullptr, nullptr); close(lfd);
+        bind(lfd, (sockaddr*)&addr, sizeof(addr)); listen(lfd, 1);
+        printf("Listening on port %d\n", ctrl_port);
+        int ctrl_fd = accept(lfd, nullptr, nullptr); close(lfd);
+        printf("Accepted control channel on port %d\n", ctrl_port);
 
         // Persistent local sender threads iterate over sizes
         std::atomic<size_t> size_index{0};
