@@ -471,7 +471,7 @@ int main(int argc, char** argv) {
     size_t remote_threads = 16;
     const std::vector<size_t> sizes = {4096, 8192, 65536, 131072, 1048576};
     int rounds = 20;
-    int repeats = 3;
+    int repeats = 10;
 
     // Prepare CSV (server only)
     std::ofstream csv;

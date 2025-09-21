@@ -86,6 +86,65 @@ def main(csv_path: str):
         plt.savefig(out_name, dpi=150, bbox_inches="tight")
         print(f"Saved {out_name}")
 
+    # Combined figure: subplots for all sizes in one PNG (like plot_hist.py)
+    if len(sizes) > 0:
+        cols = 3
+        rows = int(np.ceil(len(sizes) / cols))
+        fig, axes = plt.subplots(rows, cols, figsize=(cols * 4.5, rows * 3.2))
+        axes = np.array(axes).reshape(-1)
+        for idx, size in enumerate(sizes):
+            ax = axes[idx]
+            sub = df[df["size_bytes"] == size]
+            labels = []
+            values = []
+            colors = []
+            color_map = {"UCX": "tab:green", "ZMQ": "tab:blue"}
+            for pattern in ["UCX", "ZMQ"]:
+                sel = sub[sub["pattern"] == pattern].sort_values("round")
+                for _, row in sel.iterrows():
+                    labels.append(f"{pattern}-{int(row['round'])}")
+                    values.append(float(row["latency_usec"]))
+                    colors.append(color_map.get(pattern, "gray"))
+            x = np.arange(len(values))
+            ax.bar(x, values, color=colors)
+            ax.set_xticks([])
+            ax.set_ylabel("usec")
+            ax.set_title(titles.get(int(size), str(int(size))))
+            # Means per transport
+            for pattern, color in [("UCX", "tab:green"), ("ZMQ", "tab:blue")]:
+                pdata = sub[sub["pattern"] == pattern]["latency_usec"].astype(float)
+                if not pdata.empty:
+                    mean_val = pdata.mean()
+                    ax.axhline(mean_val, color=color, linestyle="--", linewidth=1.0, alpha=0.8)
+                    ax.annotate(
+                        f"{mean_val:.1f}",
+                        xy=(1.0, mean_val),
+                        xycoords=("axes fraction", "data"),
+                        xytext=(-4, 5),
+                        textcoords="offset points",
+                        ha="right",
+                        va="bottom",
+                        color=color,
+                        fontsize=7,
+                    )
+        # Figure-level legend
+        fig.legend(
+            handles=[
+                Patch(color="tab:green", label="UCX"),
+                Patch(color="tab:blue", label="ZMQ"),
+                Line2D([0], [0], color="black", linestyle="--", label="Mean (per transport)")
+            ],
+            loc="upper center",
+            ncol=3,
+            bbox_to_anchor=(0.5, 1.02)
+        )
+        # Hide any unused axes
+        for j in range(len(sizes), len(axes)):
+            fig.delaxes(axes[j])
+        fig.tight_layout(rect=[0, 0, 1, 0.95])
+        fig.savefig("compare_all_sizes.png", dpi=150, bbox_inches="tight")
+        print("Saved compare_all_sizes.png")
+
 
 if __name__ == "__main__":
     csv = sys.argv[1] if len(sys.argv) > 1 else "results_ucx_zmq.csv"
