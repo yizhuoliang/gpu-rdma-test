@@ -142,14 +142,18 @@ static void run_zmq_fanin_all(bool isServer, const char* ip, int port, size_t nu
             start_local.store(true, std::memory_order_release);
             while (started_local.load(std::memory_order_acquire) < num_local_senders) { std::this_thread::yield(); }
             for (size_t si = 0; si < sizes.size(); ++si) {
-                size_index.store(si);
-                size_t expected = (num_local_senders) * (size_t)rounds;
-                auto t0 = clock_type::now();
-                round_id.fetch_add(1, std::memory_order_acq_rel);
-                size_t got = 0; zmq::message_t msg;
-                while (got < expected) { pull.recv(msg, zmq::recv_flags::none); ++got; }
-                auto t1 = clock_type::now();
-                std::cout << "ZMQ local fan-in msg_bytes=" << sizes[si] << " total_msgs=" << expected << " total_usec=" << std::chrono::duration<double, std::micro>(t1 - t0).count() << std::endl;
+                for (int rep = 1; rep <= repeats; ++rep) {
+                    size_index.store(si);
+                    size_t expected = (num_local_senders) * (size_t)rounds;
+                    auto t0 = clock_type::now();
+                    round_id.fetch_add(1, std::memory_order_acq_rel);
+                    size_t got = 0; zmq::message_t msg;
+                    while (got < expected) { pull.recv(msg, zmq::recv_flags::none); ++got; }
+                    auto t1 = clock_type::now();
+                    double usec = std::chrono::duration<double, std::micro>(t1 - t0).count();
+                    std::cout << "ZMQ local fan-in msg_bytes=" << sizes[si] << " total_msgs=" << expected << " total_usec=" << usec << std::endl;
+                    if (csv) csv_write_row(*csv, sizes[si], "ZMQ_local", rep, usec);
+                }
             }
             done.store(true);
             for (auto& th : local) th.join();
@@ -169,7 +173,7 @@ static void run_zmq_fanin_all(bool isServer, const char* ip, int port, size_t nu
                     auto t1 = clock_type::now();
                     double usec = std::chrono::duration<double, std::micro>(t1 - t0).count();
                     std::cout << "ZMQ remote fan-in msg_bytes=" << sizes[si] << " total_msgs=" << expected << " total_usec=" << usec << std::endl;
-                    if (csv) csv_write_row(*csv, sizes[si], "ZMQ", rep, usec);
+                    if (csv) csv_write_row(*csv, sizes[si], "ZMQ_remote", rep, usec);
                 }
             }
             // termination token
@@ -294,14 +298,18 @@ static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t nu
             start_local.store(true, std::memory_order_release);
             while (started_local.load(std::memory_order_acquire) < num_local_senders) { std::this_thread::yield(); }
             for (size_t si = 0; si < sizes.size(); ++si) {
-                size_index.store(si);
-                size_t expected = (num_local_senders) * (size_t)rounds;
-                auto t0 = clock_type::now();
-                round_id.fetch_add(1, std::memory_order_acq_rel);
-                size_t got = 0; Message m;
-                while (got < expected) { if (q.dequeue(m)) ++got; }
-                auto t1 = clock_type::now();
-                std::cout << "UCX local fan-in msg_bytes=" << sizes[si] << " total_msgs=" << expected << " total_usec=" << std::chrono::duration<double, std::micro>(t1 - t0).count() << std::endl;
+                for (int rep = 1; rep <= repeats; ++rep) {
+                    size_index.store(si);
+                    size_t expected = (num_local_senders) * (size_t)rounds;
+                    auto t0 = clock_type::now();
+                    round_id.fetch_add(1, std::memory_order_acq_rel);
+                    size_t got = 0; Message m;
+                    while (got < expected) { if (q.dequeue(m)) ++got; }
+                    auto t1 = clock_type::now();
+                    double usec = std::chrono::duration<double, std::micro>(t1 - t0).count();
+                    std::cout << "UCX local fan-in msg_bytes=" << sizes[si] << " total_msgs=" << expected << " total_usec=" << usec << std::endl;
+                    if (csv) csv_write_row(*csv, sizes[si], "UCX_local", rep, usec);
+                }
             }
             done.store(true);
             for (auto& th : local) th.join();
@@ -364,7 +372,7 @@ static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t nu
                     auto t1 = clock_type::now();
                     double usec = std::chrono::duration<double, std::micro>(t1 - t0).count();
                     std::cout << "UCX remote fan-in msg_bytes=" << sizes[si] << " total_msgs=" << expected << " total_usec=" << usec << std::endl;
-                    if (csv) csv_write_row(*csv, sizes[si], "UCX", rep, usec);
+                    if (csv) csv_write_row(*csv, sizes[si], "UCX_remote", rep, usec);
                 }
             }
 
