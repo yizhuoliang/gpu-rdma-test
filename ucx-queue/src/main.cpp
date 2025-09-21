@@ -141,6 +141,16 @@ static void run_zmq_fanin_all(bool isServer, const char* ip, int port, size_t nu
             // Start local run
             start_local.store(true, std::memory_order_release);
             while (started_local.load(std::memory_order_acquire) < num_local_senders) { std::this_thread::yield(); }
+            // Warm-up: 5 non-logged, non-timed rounds using the first size
+            if (!sizes.empty()) {
+                size_index.store(0);
+                size_t expected = (num_local_senders) * (size_t)rounds;
+                for (int w = 0; w < 5; ++w) {
+                    round_id.fetch_add(1, std::memory_order_acq_rel);
+                    size_t got = 0; zmq::message_t msg;
+                    while (got < expected) { pull.recv(msg, zmq::recv_flags::none); ++got; }
+                }
+            }
             for (size_t si = 0; si < sizes.size(); ++si) {
                 for (int rep = 1; rep <= repeats; ++rep) {
                     size_index.store(si);
@@ -161,6 +171,17 @@ static void run_zmq_fanin_all(bool isServer, const char* ip, int port, size_t nu
 
         // ========== Remote fan-in (only remote threads; UCX for control) ==========
         {
+            // Warm-up: 5 non-logged control rounds for the first size
+            if (!sizes.empty()) {
+                uint32_t token = (uint32_t)0;
+                size_t expected = (num_remote_senders) * (size_t)rounds;
+                for (int w = 0; w < 5; ++w) {
+                    ucp_request_param_t sp{}; sp.op_attr_mask = 0;
+                    ctrl_wait(cworker, ucp_tag_send_nbx(cep, &token, sizeof(token), CTRL_TAG, &sp));
+                    size_t got = 0; zmq::message_t msg;
+                    while (got < expected) { pull.recv(msg, zmq::recv_flags::none); ++got; }
+                }
+            }
             for (size_t si = 0; si < sizes.size(); ++si) {
                 for (int rep = 1; rep <= repeats; ++rep) {
                     uint32_t token = (uint32_t)si;
