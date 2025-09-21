@@ -14,22 +14,6 @@ struct RecvCtx {
     std::vector<uint8_t>* buf;
 };
 
-static void wait_req(ucp_worker_h w, void* req) {
-    if (req == nullptr) return;
-    if (!UCS_PTR_IS_PTR(req)) {
-        ucs_status_t st = (ucs_status_t)UCS_PTR_STATUS(req);
-        if (st != UCS_OK) {
-            std::cerr << "UCX err: " << ucs_status_string(st) << std::endl;
-            std::abort();
-        }
-        return;
-    }
-    while (ucp_request_check_status(req) == UCS_INPROGRESS) {
-        ucp_worker_progress(w);
-    }
-    ucp_request_free(req);
-}
-
 FanInQueueReceiver::FanInQueueReceiver(const std::string& ip, int tcp_port)
     : tcp_port_(tcp_port), ip_(ip) {
     // Initialize UCX: read config and create a context with tag-matching enabled
@@ -238,7 +222,23 @@ void FanInQueueSender::send(const void* buf, size_t len, uint64_t tag) {
     if (ep_ == nullptr) return;
     ucp_request_param_t prm{}; prm.op_attr_mask = 0;
     void* req = ucp_tag_send_nbx(ep_, buf, len, tag, &prm);
-    wait_req(worker_, req);
+    waitReq(req);
+}
+
+void FanInQueueSender::waitReq(void* req) {
+    if (req == nullptr) return;
+    if (!UCS_PTR_IS_PTR(req)) {
+        ucs_status_t st = (ucs_status_t)UCS_PTR_STATUS(req);
+        if (st != UCS_OK) {
+            std::cerr << "UCX err: " << ucs_status_string(st) << std::endl;
+            std::abort();
+        }
+        return;
+    }
+    while (ucp_request_check_status(req) == UCS_INPROGRESS) {
+        ucp_worker_progress(worker_);
+    }
+    ucp_request_free(req);
 }
 
 bool FanInQueueReceiver::dequeue(Message& out) {

@@ -120,6 +120,9 @@ public:
     void stop();
 
 private:
+    // Driving ucx worker progress until the request is completed
+    void waitReq(void* req);
+
     // TCP OOB
     int tcp_port_ = 0;
     std::string ip_;
