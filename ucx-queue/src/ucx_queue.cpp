@@ -32,6 +32,7 @@ static void wait_req(ucp_worker_h w, void* req) {
 
 FanInQueueReceiver::FanInQueueReceiver(const std::string& ip, int tcp_port)
     : tcp_port_(tcp_port), ip_(ip) {
+    // Initialize UCX: read config and create a context with tag-matching enabled
     ucp_config_t* cfg{};
     if (ucp_config_read(nullptr, nullptr, &cfg) != UCS_OK) {
         throw std::runtime_error("ucp_config_read failed");
@@ -43,7 +44,11 @@ FanInQueueReceiver::FanInQueueReceiver(const std::string& ip, int tcp_port)
     }
     ucp_config_release(cfg);
 
-    ucp_worker_params_t wp{}; wp.field_mask = UCP_WORKER_PARAM_FIELD_THREAD_MODE; wp.thread_mode = UCS_THREAD_MODE_MULTI;
+    // Use multi-threaded UCX worker, as the states are touched by multiple threads
+    ucp_worker_params_t wp{};
+    wp.field_mask = UCP_WORKER_PARAM_FIELD_THREAD_MODE;
+    wp.thread_mode = UCS_THREAD_MODE_MULTI;
+
     if (ucp_worker_create(context_, &wp, &worker_) != UCS_OK) {
         throw std::runtime_error("ucp_worker_create failed");
     }
@@ -54,6 +59,9 @@ FanInQueueReceiver::~FanInQueueReceiver() {
 }
 
 void FanInQueueReceiver::start() {
+    /*
+        Start progress thread, start TCP listener and acceptor thread
+    */
     running_.store(true);
     // Start progress thread
     progress_thr_ = std::thread(&FanInQueueReceiver::progressThread, this);
@@ -68,11 +76,14 @@ void FanInQueueReceiver::start() {
     if (bind(fd, (sockaddr*)&addr, sizeof(addr)) != 0) throw std::runtime_error("bind failed");
     if (listen(fd, 128) != 0) throw std::runtime_error("listen failed");
     tcp_listen_fd_ = fd;
-    // accept endpoints in a separate thread
+    // Start accept thread
     accept_thr_ = std::thread(&FanInQueueReceiver::acceptThread, this);
 }
 
 void FanInQueueReceiver::acceptThread() {
+    /*
+        Exchange worker addresses with remote senders trying to connect
+    */
     while (running_.load()) {
         int cfd = accept(tcp_listen_fd_, nullptr, nullptr);
         if (cfd < 0) break;
@@ -115,7 +126,7 @@ void FanInQueueReceiver::progressThread() {
             ucp_request_param_t prm{};
             prm.op_attr_mask = UCP_OP_ATTR_FIELD_CALLBACK | UCP_OP_ATTR_FIELD_USER_DATA;
             prm.user_data = ctx;
-            prm.cb.recv = &FanInQueueReceiver::onRecvCb;
+            prm.cb.recv = &FanInQueueReceiver::onRecvCallback;
 
             void* req = ucp_tag_msg_recv_nbx(worker_, buf->data(), buf->size(), msg, &prm);
             if (UCS_PTR_IS_ERR(req)) {
@@ -146,14 +157,14 @@ void FanInQueueReceiver::progressThread() {
     }
 }
 
-void FanInQueueReceiver::onRecvCb(void* request, ucs_status_t status, const ucp_tag_recv_info_t* info, void* user_data) {
+void FanInQueueReceiver::onRecvCallback(void* request, ucs_status_t status, const ucp_tag_recv_info_t* info, void* user_data) {
     auto* ctx = static_cast<RecvCtx*>(user_data);
     FanInQueueReceiver* self = ctx->self;
     std::vector<uint8_t>* buf = ctx->buf;
 
     if (status == UCS_OK) {
         Message m{.data = std::move(*buf)};
-        // Enqueue with minimal contention; spin briefly if full
+        // Spin if full
         for (int i = 0; i < 64; ++i) {
             if (self->q_.try_enqueue(std::move(m))) { break; }
             std::this_thread::yield();
@@ -170,17 +181,23 @@ void FanInQueueReceiver::onRecvCb(void* request, ucs_status_t status, const ucp_
 // Sender implementation
 FanInQueueSender::FanInQueueSender(const std::string& ip, int tcp_port)
     : tcp_port_(tcp_port), ip_(ip) {
+    // Initialize UCX, read config and create a context with tag-matching enabled
     ucp_config_t* cfg{};
     if (ucp_config_read(nullptr, nullptr, &cfg) != UCS_OK) {
         throw std::runtime_error("ucp_config_read failed");
     }
-    ucp_params_t p{}; p.field_mask = UCP_PARAM_FIELD_FEATURES; p.features = UCP_FEATURE_TAG;
+    ucp_params_t p{};
+    p.field_mask = UCP_PARAM_FIELD_FEATURES;
+    p.features = UCP_FEATURE_TAG;
+
     if (ucp_init(&p, cfg, &context_) != UCS_OK) {
         ucp_config_release(cfg);
         throw std::runtime_error("ucp_init failed");
     }
     ucp_config_release(cfg);
 
+    // Use multi-threaded UCX worker, as the states are touched by multiple threads
+    // Note that there's no dedicated progress thread, as the send method makes the progress
     ucp_worker_params_t wp{}; wp.field_mask = UCP_WORKER_PARAM_FIELD_THREAD_MODE; wp.thread_mode = UCS_THREAD_MODE_MULTI;
     if (ucp_worker_create(context_, &wp, &worker_) != UCS_OK) {
         throw std::runtime_error("ucp_worker_create failed");
@@ -190,6 +207,7 @@ FanInQueueSender::FanInQueueSender(const std::string& ip, int tcp_port)
 FanInQueueSender::~FanInQueueSender() { stop(); }
 
 void FanInQueueSender::start() {
+    // OOB: Connect to the receiver via TCP
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) throw std::runtime_error("socket failed");
     sockaddr_in addr{}; addr.sin_family = AF_INET; addr.sin_port = htons(tcp_port_);
@@ -253,7 +271,6 @@ void FanInQueueReceiver::stop() {
     }
     if (worker_) { ucp_worker_destroy(worker_); worker_ = nullptr; }
     if (context_) { ucp_cleanup(context_); context_ = nullptr; }
-    // listener already closed above
 }
 
 size_t FanInQueueReceiver::endpoint_count() const { return ep_count_.load(std::memory_order_relaxed); }

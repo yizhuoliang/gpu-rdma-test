@@ -19,7 +19,7 @@ struct Message {
 };
 
 // Single-producer single-consumer ring buffer.
-//Capacity must be power of two, because we use bitwise AND to calculate the next index.
+// Capacity must be power of two, because we use bitwise AND to calculate the next index.
 template <typename T>
 class SpscRing {
 public:
@@ -81,7 +81,7 @@ public:
 private:
     void progressThread();
     void acceptThread();
-    static void onRecvCb(void* request, ucs_status_t status, const ucp_tag_recv_info_t* info, void* user_data);
+    static void onRecvCallback(void* request, ucs_status_t status, const ucp_tag_recv_info_t* info, void* user_data);
 
     // TCP OOB helpers
     int tcp_listen_fd_ = -1;
@@ -112,7 +112,7 @@ public:
     // Connect a single endpoint to the receiver via TCP OOB
     void start();
 
-    // Send message on this sender's endpoint
+    // Send message on this sender's endpoint, this is blocking
     void send(const void* buf, size_t len, uint64_t tag = 0xABCDEF);
 
     size_t endpoint_count() const;
