@@ -485,14 +485,9 @@ int main(int argc, char** argv) {
     std::ofstream csv;
     if (isServer) {
         const char* csv_path = "results_ucx_zmq.csv";
-        bool need_header = false;
-        {
-            std::ifstream check(csv_path);
-            if (!check.good()) need_header = true;
-        }
-        csv.open(csv_path, std::ios::app);
-        if (!csv.is_open()) { std::cerr << "Failed to open CSV for append: " << csv_path << std::endl; }
-        else if (need_header) { csv << "size_bytes,pattern,round,latency_usec\n"; }
+        csv.open(csv_path, std::ios::out | std::ios::trunc);
+        if (!csv.is_open()) { std::cerr << "Failed to open CSV for write: " << csv_path << std::endl; }
+        else { csv << "size_bytes,pattern,round,latency_usec\n"; }
     }
 
     // Always run UCX first, then ZMQ

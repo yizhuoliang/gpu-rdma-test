@@ -98,50 +98,46 @@ def main(csv_path: str):
             plt.savefig(out_name, dpi=150, bbox_inches="tight")
             print(f"Saved {out_name}")
 
-    # Combined figure: subplots for all sizes in one PNG (like plot_hist.py)
+    # Combined figure: local and remote in a single PNG with a divider
     if len(sizes) > 0:
         cols = 3
         rows = int(np.ceil(len(sizes) / cols))
-        for scope in sorted(df["scope"].unique()):
-            sdf = df[df["scope"] == scope]
-            fig, axes = plt.subplots(rows, cols, figsize=(cols * 4.5, rows * 3.2))
-            axes = np.array(axes).reshape(-1)
-            for idx, size in enumerate(sizes):
-                ax = axes[idx]
-                sub = sdf[sdf["size_bytes"] == size]
-                labels = []
-                values = []
-                colors = []
-                color_map = {"UCX": "tab:green", "ZMQ": "tab:blue"}
-                for pattern in ["UCX", "ZMQ"]:
-                    sel = sub[sub["transport"] == pattern].sort_values("round")
-                    for _, row in sel.iterrows():
-                        labels.append(f"{pattern}-{int(row['round'])}")
-                        values.append(float(row["latency_usec"]))
-                        colors.append(color_map.get(pattern, "gray"))
-                x = np.arange(len(values))
-                ax.bar(x, values, color=colors)
-                ax.set_xticks([])
-                ax.set_ylabel("usec")
-                ax.set_title(titles.get(int(size), str(int(size))) + f" ({scope})")
-                # Means per transport
-                for pattern, color in [("UCX", "tab:green"), ("ZMQ", "tab:blue")]:
-                    pdata = sub[sub["transport"] == pattern]["latency_usec"].astype(float)
-                    if not pdata.empty:
-                        mean_val = pdata.mean()
-                        ax.axhline(mean_val, color=color, linestyle="--", linewidth=1.0, alpha=0.8)
-                        ax.annotate(
-                            f"{mean_val:.1f}",
-                            xy=(1.0, mean_val),
-                            xycoords=("axes fraction", "data"),
-                            xytext=(-4, 5),
-                            textcoords="offset points",
-                            ha="right",
-                            va="bottom",
-                            color=color,
-                            fontsize=7,
-                        )
-            # Figure-level legend
+        scopes = [s for s in ["local", "remote"] if s in set(df["scope"]) ]
+        if scopes:
+            fig, axes = plt.subplots(len(scopes) * rows, cols, figsize=(cols * 4.5, len(scopes) * rows * 3.2))
+            axes = np.array(axes).reshape(len(scopes), rows, cols)
+            for sidx, scope in enumerate(scopes):
+                sdf = df[df["scope"] == scope]
+                flat_axes = axes[sidx].reshape(-1)
+                for idx, size in enumerate(sizes):
+                    ax = flat_axes[idx]
+                    sub = sdf[sdf["size_bytes"] == size]
+                    labels = []
+                    values = []
+                    colors = []
+                    color_map = {"UCX": "tab:green", "ZMQ": "tab:blue"}
+                    for pattern in ["UCX", "ZMQ"]:
+                        sel = sub[sub["transport"] == pattern].sort_values("round")
+                        for _, row in sel.iterrows():
+                            labels.append(f"{pattern}-{int(row['round'])}")
+                            values.append(float(row["latency_usec"]))
+                            colors.append(color_map.get(pattern, "gray"))
+                    x = np.arange(len(values))
+                    ax.bar(x, values, color=colors)
+                    ax.set_xticks([])
+                    ax.set_ylabel("usec")
+                    ax.set_title(titles.get(int(size), str(int(size))) + f" ({scope})")
+                    # Means
+                    for pattern, color in [("UCX", "tab:green"), ("ZMQ", "tab:blue")]:
+                        pdata = sub[sub["transport"] == pattern]["latency_usec"].astype(float)
+                        if not pdata.empty:
+                            mean_val = pdata.mean()
+                            ax.axhline(mean_val, color=color, linestyle="--", linewidth=1.0, alpha=0.8)
+                # Draw a horizontal divider between local and remote panels
+                if sidx == 0:
+                    for ax in flat_axes:
+                        ax.axhline(ax.get_ylim()[1], color="gray", linewidth=1.0)
+            # Legend
             fig.legend(
                 handles=[
                     Patch(color="tab:green", label="UCX"),
@@ -152,11 +148,8 @@ def main(csv_path: str):
                 ncol=3,
                 bbox_to_anchor=(0.5, 1.02)
             )
-            # Hide any unused axes
-            for j in range(len(sizes), len(axes)):
-                fig.delaxes(axes[j])
             fig.tight_layout(rect=[0, 0, 1, 0.95])
-            out = f"compare_all_sizes_{scope}.png"
+            out = "compare_all_sizes.png"
             fig.savefig(out, dpi=150, bbox_inches="tight")
             print(f"Saved {out}")
 
