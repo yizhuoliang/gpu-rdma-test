@@ -9,6 +9,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <fstream>
 
 using clock_type = std::chrono::high_resolution_clock;
 
@@ -55,7 +56,13 @@ static void run_zmq_fanin(bool isServer, const char* ip, int port, size_t num_lo
     }
 }
 
-static void run_zmq_fanin_all(bool isServer, const char* ip, int port, size_t num_local_senders, size_t num_remote_senders, const std::vector<size_t>& sizes, int rounds) {
+// Helper to append one CSV row: size_bytes,pattern,round,latency_usec
+static inline void csv_write_row(std::ofstream& csv, size_t size_bytes, const char* pattern, int round, double latency_usec) {
+    csv << size_bytes << "," << pattern << "," << round << "," << latency_usec << "\n";
+    csv.flush();
+}
+
+static void run_zmq_fanin_all(bool isServer, const char* ip, int port, size_t num_local_senders, size_t num_remote_senders, const std::vector<size_t>& sizes, int rounds, std::ofstream* csv, int repeats) {
     zmq::context_t ctx(1);
     std::string endpoint = std::string("tcp://") + ip + ":" + std::to_string(port);
     if (isServer) {
@@ -151,15 +158,19 @@ static void run_zmq_fanin_all(bool isServer, const char* ip, int port, size_t nu
         // ========== Remote fan-in (only remote threads; UCX for control) ==========
         {
             for (size_t si = 0; si < sizes.size(); ++si) {
-                uint32_t token = (uint32_t)si;
-                size_t expected = (num_remote_senders) * (size_t)rounds;
-                auto t0 = clock_type::now();
-                ucp_request_param_t sp{}; sp.op_attr_mask = 0;
-                ctrl_wait(cworker, ucp_tag_send_nbx(cep, &token, sizeof(token), CTRL_TAG, &sp));
-                size_t got = 0; zmq::message_t msg;
-                while (got < expected) { pull.recv(msg, zmq::recv_flags::none); ++got; }
-                auto t1 = clock_type::now();
-                std::cout << "ZMQ remote fan-in msg_bytes=" << sizes[si] << " total_msgs=" << expected << " total_usec=" << std::chrono::duration<double, std::micro>(t1 - t0).count() << std::endl;
+                for (int rep = 1; rep <= repeats; ++rep) {
+                    uint32_t token = (uint32_t)si;
+                    size_t expected = (num_remote_senders) * (size_t)rounds;
+                    auto t0 = clock_type::now();
+                    ucp_request_param_t sp{}; sp.op_attr_mask = 0;
+                    ctrl_wait(cworker, ucp_tag_send_nbx(cep, &token, sizeof(token), CTRL_TAG, &sp));
+                    size_t got = 0; zmq::message_t msg;
+                    while (got < expected) { pull.recv(msg, zmq::recv_flags::none); ++got; }
+                    auto t1 = clock_type::now();
+                    double usec = std::chrono::duration<double, std::micro>(t1 - t0).count();
+                    std::cout << "ZMQ remote fan-in msg_bytes=" << sizes[si] << " total_msgs=" << expected << " total_usec=" << usec << std::endl;
+                    if (csv) csv_write_row(*csv, sizes[si], "ZMQ", rep, usec);
+                }
             }
             // termination token
             { uint32_t term = 0xFFFFFFFFu; ucp_request_param_t sp{}; sp.op_attr_mask = 0; ctrl_wait(cworker, ucp_tag_send_nbx(cep, &term, sizeof(term), CTRL_TAG, &sp)); }
@@ -244,7 +255,7 @@ static void run_zmq_fanin_all(bool isServer, const char* ip, int port, size_t nu
     }
 }
 
-static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t num_local_senders, size_t num_remote_senders, const std::vector<size_t>& sizes, int rounds) {
+static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t num_local_senders, size_t num_remote_senders, const std::vector<size_t>& sizes, int rounds, std::ofstream* csv, int repeats) {
     using namespace ucxq;
     if (isServer) {
         FanInQueueReceiver q(ip, port);
@@ -342,15 +353,19 @@ static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t nu
             }
 
             for (size_t si = 0; si < sizes.size(); ++si) {
-                uint32_t token = (uint32_t)si;
-                size_t expected = (num_remote_senders) * (size_t)rounds;
-                auto t0 = clock_type::now();
-                ucp_request_param_t sp{}; sp.op_attr_mask = 0;
-                ctrl_wait(cworker, ucp_tag_send_nbx(cep, &token, sizeof(token), CTRL_TAG, &sp));
-                size_t got = 0; Message m;
-                while (got < expected) { if (q.dequeue(m)) ++got; }
-                auto t1 = clock_type::now();
-                std::cout << "UCX remote fan-in msg_bytes=" << sizes[si] << " total_msgs=" << expected << " total_usec=" << std::chrono::duration<double, std::micro>(t1 - t0).count() << std::endl;
+                for (int rep = 1; rep <= repeats; ++rep) {
+                    uint32_t token = (uint32_t)si;
+                    size_t expected = (num_remote_senders) * (size_t)rounds;
+                    auto t0 = clock_type::now();
+                    ucp_request_param_t sp{}; sp.op_attr_mask = 0;
+                    ctrl_wait(cworker, ucp_tag_send_nbx(cep, &token, sizeof(token), CTRL_TAG, &sp));
+                    size_t got = 0; Message m;
+                    while (got < expected) { if (q.dequeue(m)) ++got; }
+                    auto t1 = clock_type::now();
+                    double usec = std::chrono::duration<double, std::micro>(t1 - t0).count();
+                    std::cout << "UCX remote fan-in msg_bytes=" << sizes[si] << " total_msgs=" << expected << " total_usec=" << usec << std::endl;
+                    if (csv) csv_write_row(*csv, sizes[si], "UCX", rep, usec);
+                }
             }
 
             // send termination token 0xFFFFFFFF
@@ -448,23 +463,35 @@ static void run_ucx_fanin_all(bool isServer, const char* ip, int port, size_t nu
 }
 
 int main(int argc, char** argv) {
-    if (argc < 3) { std::cerr << "Usage: ucx_queue_test server|client zmq|ucx" << std::endl; return 1; }
+    if (argc < 2) { std::cerr << "Usage: ucx_queue_test server|client" << std::endl; return 1; }
     bool isServer = std::string(argv[1]) == "server";
-    std::string mode = argv[2];
     const char* ip = "10.10.2.1"; // server IP
     int port = 61000;
     size_t local_threads = 16;
     size_t remote_threads = 16;
     const std::vector<size_t> sizes = {4096, 8192, 65536, 131072, 1048576};
     int rounds = 20;
+    int repeats = 3;
 
-    if (mode == "zmq") {
-        run_zmq_fanin_all(isServer, ip, port, local_threads, remote_threads, sizes, rounds);
-    } else if (mode == "ucx") {
-        run_ucx_fanin_all(isServer, ip, port, local_threads, remote_threads, sizes, rounds);
-    } else {
-        std::cerr << "mode must be zmq or ucx" << std::endl; return 1;
+    // Prepare CSV (server only)
+    std::ofstream csv;
+    if (isServer) {
+        const char* csv_path = "results_ucx_zmq.csv";
+        bool need_header = false;
+        {
+            std::ifstream check(csv_path);
+            if (!check.good()) need_header = true;
+        }
+        csv.open(csv_path, std::ios::app);
+        if (!csv.is_open()) { std::cerr << "Failed to open CSV for append: " << csv_path << std::endl; }
+        else if (need_header) { csv << "size_bytes,pattern,round,latency_usec\n"; }
     }
+
+    // Always run UCX first, then ZMQ
+    run_ucx_fanin_all(isServer, ip, port, local_threads, remote_threads, sizes, rounds, isServer ? &csv : nullptr, repeats);
+    run_zmq_fanin_all(isServer, ip, port, local_threads, remote_threads, sizes, rounds, isServer ? &csv : nullptr, repeats);
+
+    if (csv.is_open()) csv.close();
     return 0;
 }
 
