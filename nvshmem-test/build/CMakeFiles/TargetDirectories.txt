@@ -1,0 +1,5 @@
+/home/yliang/gpu-test/nvshmem-test/build/CMakeFiles/put.dir
+/home/yliang/gpu-test/nvshmem-test/build/CMakeFiles/put_nvshmem.dir
+/home/yliang/gpu-test/nvshmem-test/build/CMakeFiles/cross_node_ib.dir
+/home/yliang/gpu-test/nvshmem-test/build/CMakeFiles/edit_cache.dir
+/home/yliang/gpu-test/nvshmem-test/build/CMakeFiles/rebuild_cache.dir

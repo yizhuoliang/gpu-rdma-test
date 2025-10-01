@@ -1,0 +1,1 @@
+/usr/bin/c++  -O0 -O3 -DNDEBUG CMakeFiles/cross_node_ib.dir/cross_node_ib.cpp.o -o cross_node_ib  -Wl,-rpath,/usr/lib/x86_64-linux-gnu/nvshmem/12 /usr/lib/x86_64-linux-gnu/nvshmem/12/libnvshmem_host.so /usr/lib/x86_64-linux-gnu/libcudart.so /usr/lib/x86_64-linux-gnu/libnccl.so 

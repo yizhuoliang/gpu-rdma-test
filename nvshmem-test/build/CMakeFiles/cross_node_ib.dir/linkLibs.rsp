@@ -1,0 +1,1 @@
+ -Wl,-rpath,/usr/lib/x86_64-linux-gnu/nvshmem/12:/usr/mpi/gcc/openmpi-4.1.7rc1/lib "/usr/lib/x86_64-linux-gnu/libcudart.so" "/usr/lib/x86_64-linux-gnu/nvshmem/12/libnvshmem_host.so" "/usr/lib/x86_64-linux-gnu/libnccl.so" "/usr/mpi/gcc/openmpi-4.1.7rc1/lib/libmpi.so" -lcudadevrt -lcudart_static -lrt -lpthread -ldl 

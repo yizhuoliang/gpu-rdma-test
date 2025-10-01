@@ -1,0 +1,223 @@
+CMakeFiles/cross_node_ib.dir/cross_node_ib.cpp.o: \
+ /home/yliang/gpu-test/nvshmem-test/cross_node_ib.cpp \
+ /usr/include/stdc-predef.h /usr/include/stdio.h \
+ /usr/include/x86_64-linux-gnu/bits/libc-header-start.h \
+ /usr/include/features.h /usr/include/features-time64.h \
+ /usr/include/x86_64-linux-gnu/bits/wordsize.h \
+ /usr/include/x86_64-linux-gnu/bits/timesize.h \
+ /usr/include/x86_64-linux-gnu/sys/cdefs.h \
+ /usr/include/x86_64-linux-gnu/bits/long-double.h \
+ /usr/include/x86_64-linux-gnu/gnu/stubs.h \
+ /usr/include/x86_64-linux-gnu/gnu/stubs-64.h \
+ /usr/lib/gcc/x86_64-linux-gnu/13/include/stddef.h \
+ /usr/lib/gcc/x86_64-linux-gnu/13/include/stdarg.h \
+ /usr/include/x86_64-linux-gnu/bits/types.h \
+ /usr/include/x86_64-linux-gnu/bits/typesizes.h \
+ /usr/include/x86_64-linux-gnu/bits/time64.h \
+ /usr/include/x86_64-linux-gnu/bits/types/__fpos_t.h \
+ /usr/include/x86_64-linux-gnu/bits/types/__mbstate_t.h \
+ /usr/include/x86_64-linux-gnu/bits/types/__fpos64_t.h \
+ /usr/include/x86_64-linux-gnu/bits/types/__FILE.h \
+ /usr/include/x86_64-linux-gnu/bits/types/FILE.h \
+ /usr/include/x86_64-linux-gnu/bits/types/struct_FILE.h \
+ /usr/include/x86_64-linux-gnu/bits/types/cookie_io_functions_t.h \
+ /usr/include/x86_64-linux-gnu/bits/stdio_lim.h \
+ /usr/include/x86_64-linux-gnu/bits/floatn.h \
+ /usr/include/x86_64-linux-gnu/bits/floatn-common.h \
+ /usr/include/x86_64-linux-gnu/bits/stdio2-decl.h \
+ /usr/include/x86_64-linux-gnu/bits/stdio.h \
+ /usr/include/x86_64-linux-gnu/bits/stdio2.h /usr/include/c++/13/stdlib.h \
+ /usr/include/c++/13/cstdlib \
+ /usr/include/x86_64-linux-gnu/c++/13/bits/c++config.h \
+ /usr/include/x86_64-linux-gnu/c++/13/bits/os_defines.h \
+ /usr/include/x86_64-linux-gnu/c++/13/bits/cpu_defines.h \
+ /usr/include/stdlib.h /usr/include/x86_64-linux-gnu/bits/waitflags.h \
+ /usr/include/x86_64-linux-gnu/bits/waitstatus.h \
+ /usr/include/x86_64-linux-gnu/bits/types/locale_t.h \
+ /usr/include/x86_64-linux-gnu/bits/types/__locale_t.h \
+ /usr/include/x86_64-linux-gnu/sys/types.h \
+ /usr/include/x86_64-linux-gnu/bits/types/clock_t.h \
+ /usr/include/x86_64-linux-gnu/bits/types/clockid_t.h \
+ /usr/include/x86_64-linux-gnu/bits/types/time_t.h \
+ /usr/include/x86_64-linux-gnu/bits/types/timer_t.h \
+ /usr/include/x86_64-linux-gnu/bits/stdint-intn.h /usr/include/endian.h \
+ /usr/include/x86_64-linux-gnu/bits/endian.h \
+ /usr/include/x86_64-linux-gnu/bits/endianness.h \
+ /usr/include/x86_64-linux-gnu/bits/byteswap.h \
+ /usr/include/x86_64-linux-gnu/bits/uintn-identity.h \
+ /usr/include/x86_64-linux-gnu/sys/select.h \
+ /usr/include/x86_64-linux-gnu/bits/select.h \
+ /usr/include/x86_64-linux-gnu/bits/types/sigset_t.h \
+ /usr/include/x86_64-linux-gnu/bits/types/__sigset_t.h \
+ /usr/include/x86_64-linux-gnu/bits/types/struct_timeval.h \
+ /usr/include/x86_64-linux-gnu/bits/types/struct_timespec.h \
+ /usr/include/x86_64-linux-gnu/bits/select2.h \
+ /usr/include/x86_64-linux-gnu/bits/select-decl.h \
+ /usr/include/x86_64-linux-gnu/bits/pthreadtypes.h \
+ /usr/include/x86_64-linux-gnu/bits/thread-shared-types.h \
+ /usr/include/x86_64-linux-gnu/bits/pthreadtypes-arch.h \
+ /usr/include/x86_64-linux-gnu/bits/atomic_wide_counter.h \
+ /usr/include/x86_64-linux-gnu/bits/struct_mutex.h \
+ /usr/include/x86_64-linux-gnu/bits/struct_rwlock.h /usr/include/alloca.h \
+ /usr/include/x86_64-linux-gnu/bits/stdlib-bsearch.h \
+ /usr/include/x86_64-linux-gnu/bits/stdlib-float.h \
+ /usr/include/x86_64-linux-gnu/bits/stdlib.h \
+ /usr/include/c++/13/bits/std_abs.h /usr/include/string.h \
+ /usr/include/strings.h \
+ /usr/include/x86_64-linux-gnu/bits/strings_fortified.h \
+ /usr/include/x86_64-linux-gnu/bits/string_fortified.h \
+ /usr/lib/gcc/x86_64-linux-gnu/13/include/stdint.h /usr/include/stdint.h \
+ /usr/include/x86_64-linux-gnu/bits/wchar.h \
+ /usr/include/x86_64-linux-gnu/bits/stdint-uintn.h \
+ /usr/include/x86_64-linux-gnu/bits/stdint-least.h \
+ /usr/include/arpa/inet.h /usr/include/netinet/in.h \
+ /usr/include/x86_64-linux-gnu/sys/socket.h \
+ /usr/include/x86_64-linux-gnu/bits/types/struct_iovec.h \
+ /usr/include/x86_64-linux-gnu/bits/socket.h \
+ /usr/include/x86_64-linux-gnu/bits/socket_type.h \
+ /usr/include/x86_64-linux-gnu/bits/sockaddr.h \
+ /usr/include/x86_64-linux-gnu/asm/socket.h \
+ /usr/include/asm-generic/socket.h /usr/include/linux/posix_types.h \
+ /usr/include/linux/stddef.h \
+ /usr/include/x86_64-linux-gnu/asm/posix_types.h \
+ /usr/include/x86_64-linux-gnu/asm/posix_types_64.h \
+ /usr/include/asm-generic/posix_types.h \
+ /usr/include/x86_64-linux-gnu/asm/bitsperlong.h \
+ /usr/include/asm-generic/bitsperlong.h \
+ /usr/include/x86_64-linux-gnu/asm/sockios.h \
+ /usr/include/asm-generic/sockios.h \
+ /usr/include/x86_64-linux-gnu/bits/types/struct_osockaddr.h \
+ /usr/include/x86_64-linux-gnu/bits/socket2.h \
+ /usr/include/x86_64-linux-gnu/bits/in.h /usr/include/unistd.h \
+ /usr/include/x86_64-linux-gnu/bits/posix_opt.h \
+ /usr/include/x86_64-linux-gnu/bits/environments.h \
+ /usr/include/x86_64-linux-gnu/bits/confname.h \
+ /usr/include/x86_64-linux-gnu/bits/getopt_posix.h \
+ /usr/include/x86_64-linux-gnu/bits/getopt_core.h \
+ /usr/include/x86_64-linux-gnu/bits/unistd.h \
+ /usr/include/x86_64-linux-gnu/bits/unistd-decl.h \
+ /usr/include/x86_64-linux-gnu/bits/unistd_ext.h \
+ /usr/include/linux/close_range.h /usr/include/cuda_runtime.h \
+ /usr/include/crt/host_config.h /usr/include/builtin_types.h \
+ /usr/include/device_types.h /usr/include/crt/host_defines.h \
+ /usr/include/driver_types.h /usr/include/vector_types.h \
+ /usr/lib/gcc/x86_64-linux-gnu/13/include/limits.h \
+ /usr/lib/gcc/x86_64-linux-gnu/13/include/syslimits.h \
+ /usr/include/limits.h /usr/include/x86_64-linux-gnu/bits/posix1_lim.h \
+ /usr/include/x86_64-linux-gnu/bits/local_lim.h \
+ /usr/include/linux/limits.h \
+ /usr/include/x86_64-linux-gnu/bits/pthread_stack_min-dynamic.h \
+ /usr/include/x86_64-linux-gnu/bits/posix2_lim.h \
+ /usr/include/x86_64-linux-gnu/bits/xopen_lim.h \
+ /usr/include/x86_64-linux-gnu/bits/uio_lim.h \
+ /usr/include/surface_types.h /usr/include/texture_types.h \
+ /usr/include/library_types.h /usr/include/channel_descriptor.h \
+ /usr/include/cuda_runtime_api.h /usr/include/cuda_device_runtime_api.h \
+ /usr/include/driver_functions.h /usr/include/vector_functions.h \
+ /usr/include/vector_functions.hpp /usr/include/c++/13/utility \
+ /usr/include/c++/13/bits/stl_relops.h \
+ /usr/include/c++/13/bits/stl_pair.h /usr/include/c++/13/type_traits \
+ /usr/include/c++/13/bits/move.h /usr/include/c++/13/bits/utility.h \
+ /usr/include/c++/13/initializer_list /usr/include/nvshmem_12/nvshmem.h \
+ /usr/include/nvshmem_12/non_abi/nvshmem_build_options.h \
+ /usr/include/nvshmem_12/nvshmem_host.h \
+ /usr/include/nvshmem_12/host/nvshmem_api.h /usr/include/errno.h \
+ /usr/include/x86_64-linux-gnu/bits/errno.h /usr/include/linux/errno.h \
+ /usr/include/x86_64-linux-gnu/asm/errno.h \
+ /usr/include/asm-generic/errno.h /usr/include/asm-generic/errno-base.h \
+ /usr/include/x86_64-linux-gnu/bits/types/error_t.h \
+ /usr/include/nvshmem_12/device_host/nvshmem_common.cuh \
+ /usr/include/cuda_fp16.h /usr/include/cuda_fp16.hpp \
+ /usr/include/nv/target /usr/include/nv/detail/__target_macros \
+ /usr/include/nv/detail/__preprocessor /usr/include/c++/13/cstring \
+ /usr/include/cuda_bf16.h /usr/include/cuda_bf16.hpp \
+ /usr/include/nvshmem_12/device_host_transport/nvshmem_common_transport.h \
+ /usr/include/nvshmem_12/device_host/nvshmem_types.h \
+ /usr/include/nvshmem_12/bootstrap_device_host/nvshmem_uniqueid.h \
+ /usr/include/nvshmem_12/device_host_transport/nvshmem_constants.h \
+ /usr/include/nvshmem_12/non_abi/nvshmem_version.h \
+ /usr/include/nvshmem_12/host/nvshmem_macros.h \
+ /usr/include/nvshmem_12/host/nvshmem_coll_api.h \
+ /usr/include/nvshmem_12/host/nvshmemx_api.h /usr/include/cuda.h \
+ /usr/include/nvshmem_12/host/nvshmemx_coll_api.h \
+ /usr/include/nvshmem_12/non_abi/nvshmemx_error.h \
+ /usr/include/nvshmem_12/host/nvshmem_api.h \
+ /usr/include/nvshmem_12/device/nvshmem_defines.h \
+ /usr/include/nvshmem_12/device/nvshmem_device_macros.h \
+ /usr/include/nvshmem_12/non_abi/device/pt-to-pt/nvshmemi_transfer_api.cuh \
+ /usr/include/nvshmem_12/non_abi/device/threadgroup/nvshmemi_common_device_defines.cuh \
+ /usr/include/nvshmem_12/non_abi/device/wait/nvshmemi_wait_until_apis.cuh \
+ /usr/include/nvshmem_12/non_abi/device/common/nvshmemi_common_device.cuh \
+ /usr/include/nvshmem_12/non_abi/device/pt-to-pt/proxy_device.cuh \
+ /usr/include/nvshmem_12/non_abi/device/pt-to-pt/utils_device.h \
+ /usr/include/nvshmem_12/device_host/nvshmem_proxy_channel.h \
+ /usr/include/nvshmem_12/non_abi/device/team/nvshmemi_team_defines.cuh \
+ /usr/include/assert.h \
+ /usr/include/nvshmem_12/device/nvshmem_coll_defines.cuh \
+ /usr/include/nvshmem_12/non_abi/device/coll/defines.cuh \
+ /usr/include/nvshmem_12/non_abi/device/coll/alltoall.cuh \
+ /usr/include/nvshmem_12/non_abi/device/coll/barrier.cuh \
+ /usr/include/nvshmem_12/device_host/nvshmem_tensor.h \
+ /usr/include/cuda/std/tuple /usr/include/cuda/std/cstdint \
+ /usr/include/c++/13/cstdint /usr/include/cuda/std/version \
+ /usr/include/cuda/std/detail/__config \
+ /usr/include/cuda/std/detail/libcxx/include/__config \
+ /usr/include/cuda/std/detail/__pragma_push \
+ /usr/include/cuda/std/detail/libcxx/include/__pragma_push \
+ /usr/include/cuda/std/detail/libcxx/include/__undef_macros \
+ /usr/include/cuda/std/detail/libcxx/include/version \
+ /usr/include/cuda/std/detail/__pragma_pop \
+ /usr/include/cuda/std/detail/libcxx/include/__pragma_pop \
+ /usr/include/cuda/std/climits /usr/include/c++/13/climits \
+ /usr/include/cuda/std/detail/libcxx/include/climits \
+ /usr/include/cuda/std/detail/libcxx/include/cstdint \
+ /usr/include/cuda/std/type_traits /usr/include/cuda/std/cstddef \
+ /usr/include/c++/13/cstddef \
+ /usr/include/cuda/std/detail/libcxx/include/cstddef \
+ /usr/include/cuda/std/detail/libcxx/include/type_traits \
+ /usr/include/cuda/std/detail/libcxx/include/__tuple \
+ /usr/include/cuda/std/functional /usr/include/cuda/std/iterator \
+ /usr/include/cuda/std/detail/libcxx/include/iosfwd \
+ /usr/include/cuda/std/detail/libcxx/include/iterator \
+ /usr/include/cuda/std/utility \
+ /usr/include/cuda/std/detail/libcxx/include/utility \
+ /usr/include/cuda/std/detail/__functional_base \
+ /usr/include/cuda/std/chrono /usr/include/c++/13/chrono \
+ /usr/include/c++/13/bits/requires_hosted.h \
+ /usr/include/c++/13/bits/chrono.h /usr/include/c++/13/ratio \
+ /usr/include/c++/13/limits /usr/include/c++/13/ctime /usr/include/time.h \
+ /usr/include/x86_64-linux-gnu/bits/time.h \
+ /usr/include/x86_64-linux-gnu/bits/timex.h \
+ /usr/include/x86_64-linux-gnu/bits/types/struct_tm.h \
+ /usr/include/x86_64-linux-gnu/bits/types/struct_itimerspec.h \
+ /usr/include/c++/13/bits/parse_numbers.h \
+ /usr/include/c++/13/ext/numeric_traits.h \
+ /usr/include/c++/13/bits/cpp_type_traits.h \
+ /usr/include/c++/13/ext/type_traits.h /usr/include/cuda/std/ctime \
+ /usr/include/cuda/std/detail/libcxx/include/ctime \
+ /usr/include/cuda/std/ratio \
+ /usr/include/cuda/std/detail/libcxx/include/ratio \
+ /usr/include/cuda/std/limits \
+ /usr/include/cuda/std/detail/libcxx/include/limits \
+ /usr/include/cuda/std/detail/libcxx/include/chrono \
+ /usr/include/cuda/std/climits /usr/include/cuda/std/detail/__config \
+ /usr/include/cuda/std/detail/libcxx/include/__functional_base \
+ /usr/include/cuda/std/detail/libcxx/include/functional \
+ /usr/include/cuda/std/detail/libcxx/include/tuple \
+ /usr/include/cuda/std/type_traits \
+ /usr/include/nvshmem_12/non_abi/device/coll/utils.cuh \
+ /usr/include/nvshmem_12/non_abi/device/coll/broadcast.cuh \
+ /usr/include/nvshmem_12/non_abi/device/coll/fcollect.cuh \
+ /usr/include/nvshmem_12/non_abi/device/common/nvshmemi_tile_utils.cuh \
+ /usr/include/cuda/std/utility \
+ /usr/include/nvshmem_12/non_abi/device/coll/reduce.cuh \
+ /usr/include/nvshmem_12/non_abi/device/coll/reducescatter.cuh \
+ /usr/include/nvshmem_12/device/nvshmemx_defines.h \
+ /usr/include/nvshmem_12/device/nvshmemx_collective_launch_apis.h \
+ /usr/include/nvshmem_12/device/nvshmemx_coll_defines.cuh \
+ /usr/include/nvshmem_12/device/nvshmem_coll_defines.cuh \
+ /usr/include/nvshmem_12/nvshmemx.h \
+ /usr/include/nvshmem_12/device/tile/nvshmemx_tile_api.hpp \
+ /usr/include/nvshmem_12/device/nvshmemx_collective_launch_apis.h \
+ /usr/include/nvshmem_12/device/tile/nvshmemx_tile_api_defines.cuh \
+ /usr/include/nccl.h
