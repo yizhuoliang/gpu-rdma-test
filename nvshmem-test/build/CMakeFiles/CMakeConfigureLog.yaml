@@ -1203,3 +1203,76 @@ events:
         
       exitCode: 0
 ...
+
+---
+events:
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/usr/share/cmake-3.28/Modules/FindMPI.cmake:1278 (try_compile)"
+      - "/usr/share/cmake-3.28/Modules/FindMPI.cmake:1322 (_MPI_try_staged_settings)"
+      - "/usr/share/cmake-3.28/Modules/FindMPI.cmake:1645 (_MPI_check_lang_works)"
+      - "CMakeLists.txt:55 (find_package)"
+    description: "The MPI test test_mpi for CXX in mode normal"
+    directories:
+      source: "/home/yliang/gpu-test/nvshmem-test/build/CMakeFiles/CMakeScratch/TryCompile-3gCQDK"
+      binary: "/home/yliang/gpu-test/nvshmem-test/build/CMakeFiles/CMakeScratch/TryCompile-3gCQDK"
+    cmakeVariables:
+      CMAKE_CUDA_ARCHITECTURES: "80"
+      CMAKE_CXX_FLAGS: " -O0"
+      CMAKE_CXX_FLAGS_DEBUG: "-g"
+      CMAKE_EXE_LINKER_FLAGS: ""
+    buildResult:
+      variable: "MPI_RESULT_CXX_test_mpi_normal"
+      cached: true
+      stdout: |
+        Change Dir: '/home/yliang/gpu-test/nvshmem-test/build/CMakeFiles/CMakeScratch/TryCompile-3gCQDK'
+        
+        Run Build Command(s): /usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_59455/fast
+        gmake[1]: Entering directory '/home/yliang/gpu-test/nvshmem-test/build/CMakeFiles/CMakeScratch/TryCompile-3gCQDK'
+        /usr/bin/gmake  -f CMakeFiles/cmTC_59455.dir/build.make CMakeFiles/cmTC_59455.dir/build
+        gmake[2]: Entering directory '/home/yliang/gpu-test/nvshmem-test/build/CMakeFiles/CMakeScratch/TryCompile-3gCQDK'
+        Building CXX object CMakeFiles/cmTC_59455.dir/test_mpi.cpp.o
+        /usr/bin/c++  -isystem /usr/mpi/gcc/openmpi-4.1.7rc1/include -isystem /usr/mpi/gcc/openmpi-4.1.7rc1/include/openmpi -isystem /usr/mpi/gcc/openmpi-4.1.7rc1/include/openmpi/opal/mca/hwloc/hwloc201/hwloc/include -isystem /usr/mpi/gcc/openmpi-4.1.7rc1/include/openmpi/opal/mca/event/libevent2022/libevent -isystem /usr/mpi/gcc/openmpi-4.1.7rc1/include/openmpi/opal/mca/event/libevent2022/libevent/include -O0  -o CMakeFiles/cmTC_59455.dir/test_mpi.cpp.o -c /home/yliang/gpu-test/nvshmem-test/build/CMakeFiles/CMakeScratch/TryCompile-3gCQDK/test_mpi.cpp
+        Linking CXX executable cmTC_59455
+        /usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_59455.dir/link.txt --verbose=1
+        /usr/bin/c++  -O0  -Wl,-rpath -Wl,/usr/mpi/gcc/openmpi-4.1.7rc1/lib -Wl,--enable-new-dtags CMakeFiles/cmTC_59455.dir/test_mpi.cpp.o -o cmTC_59455  -Wl,-rpath,/usr/mpi/gcc/openmpi-4.1.7rc1/lib /usr/mpi/gcc/openmpi-4.1.7rc1/lib/libmpi.so 
+        gmake[2]: Leaving directory '/home/yliang/gpu-test/nvshmem-test/build/CMakeFiles/CMakeScratch/TryCompile-3gCQDK'
+        gmake[1]: Leaving directory '/home/yliang/gpu-test/nvshmem-test/build/CMakeFiles/CMakeScratch/TryCompile-3gCQDK'
+        
+      exitCode: 0
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/usr/share/cmake-3.28/Modules/FindMPI.cmake:1278 (try_compile)"
+      - "/usr/share/cmake-3.28/Modules/FindMPI.cmake:1672 (_MPI_try_staged_settings)"
+      - "CMakeLists.txt:55 (find_package)"
+    description: "The MPI test test_mpi for CXX in mode MPICXX"
+    directories:
+      source: "/home/yliang/gpu-test/nvshmem-test/build/CMakeFiles/CMakeScratch/TryCompile-AJCmEv"
+      binary: "/home/yliang/gpu-test/nvshmem-test/build/CMakeFiles/CMakeScratch/TryCompile-AJCmEv"
+    cmakeVariables:
+      CMAKE_CUDA_ARCHITECTURES: "80"
+      CMAKE_CXX_FLAGS: " -O0"
+      CMAKE_CXX_FLAGS_DEBUG: "-g"
+      CMAKE_EXE_LINKER_FLAGS: ""
+    buildResult:
+      variable: "MPI_RESULT_CXX_test_mpi_MPICXX"
+      cached: true
+      stdout: |
+        Change Dir: '/home/yliang/gpu-test/nvshmem-test/build/CMakeFiles/CMakeScratch/TryCompile-AJCmEv'
+        
+        Run Build Command(s): /usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_85982/fast
+        gmake[1]: Entering directory '/home/yliang/gpu-test/nvshmem-test/build/CMakeFiles/CMakeScratch/TryCompile-AJCmEv'
+        /usr/bin/gmake  -f CMakeFiles/cmTC_85982.dir/build.make CMakeFiles/cmTC_85982.dir/build
+        gmake[2]: Entering directory '/home/yliang/gpu-test/nvshmem-test/build/CMakeFiles/CMakeScratch/TryCompile-AJCmEv'
+        Building CXX object CMakeFiles/cmTC_85982.dir/test_mpi.cpp.o
+        /usr/bin/c++  -isystem /usr/mpi/gcc/openmpi-4.1.7rc1/include -isystem /usr/mpi/gcc/openmpi-4.1.7rc1/include/openmpi -isystem /usr/mpi/gcc/openmpi-4.1.7rc1/include/openmpi/opal/mca/hwloc/hwloc201/hwloc/include -isystem /usr/mpi/gcc/openmpi-4.1.7rc1/include/openmpi/opal/mca/event/libevent2022/libevent -isystem /usr/mpi/gcc/openmpi-4.1.7rc1/include/openmpi/opal/mca/event/libevent2022/libevent/include -O0  -o CMakeFiles/cmTC_85982.dir/test_mpi.cpp.o -c /home/yliang/gpu-test/nvshmem-test/build/CMakeFiles/CMakeScratch/TryCompile-AJCmEv/test_mpi.cpp
+        Linking CXX executable cmTC_85982
+        /usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_85982.dir/link.txt --verbose=1
+        /usr/bin/c++  -O0  -Wl,-rpath -Wl,/usr/mpi/gcc/openmpi-4.1.7rc1/lib -Wl,--enable-new-dtags CMakeFiles/cmTC_85982.dir/test_mpi.cpp.o -o cmTC_85982  -Wl,-rpath,/usr/mpi/gcc/openmpi-4.1.7rc1/lib /usr/mpi/gcc/openmpi-4.1.7rc1/lib/libmpi.so 
+        gmake[2]: Leaving directory '/home/yliang/gpu-test/nvshmem-test/build/CMakeFiles/CMakeScratch/TryCompile-AJCmEv'
+        gmake[1]: Leaving directory '/home/yliang/gpu-test/nvshmem-test/build/CMakeFiles/CMakeScratch/TryCompile-AJCmEv'
+        
+      exitCode: 0
+...

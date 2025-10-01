@@ -258,9 +258,10 @@ int main(int argc, char **argv) {
     if (dev_count == 0) { fprintf(stderr, "No CUDA devices\n"); return 1; }
     CUDA_CHECK_MSG(cudaSetDevice(local_rank % dev_count), "cudaSetDevice(local_rank)");
 
-    // Avoid UCX requirement by using NVSHMEM UID bootstrap over our TCP rendezvous.
-    // Also force transport to ibrc to bypass UCX entirely.
-    setenv("NVSHMEM_TRANSPORT", "ibrc", 1);
+    // Use UID bootstrap over our TCP rendezvous. Respect user-specified transport.
+    if (getenv("NVSHMEM_TRANSPORT") == nullptr) {
+        setenv("NVSHMEM_TRANSPORT", "ibrc", 1);
+    }
     setenv("NVSHMEM_BOOTSTRAP", "UID", 1);
 
     bool isServer = (world_rank == 0);
