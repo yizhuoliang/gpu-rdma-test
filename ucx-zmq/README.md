@@ -26,7 +26,11 @@ Requires UCX and builds against sibling ucx-queue.
 Example
 
 ```bash
-./ucx-zmq/build/ucx_zmq_example
+# Terminal 1 (server on 10.10.2.1)
+./ucx-zmq/build/ucxq_example server
+
+# Terminal 2 (client using same IP/port)
+./ucx-zmq/build/ucxq_example client
 ```
 
 Notes
@@ -34,5 +38,4 @@ Notes
 - Multipart framing is implemented on top of the fan-in queue with a compact header.
 - Single-frame send/recv maps directly to the underlying queue for tensor fast path.
 - Core UCX implementation remains unchanged and is reused as-is.
-
 
