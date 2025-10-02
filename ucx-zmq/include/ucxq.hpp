@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 #include <cstring>
+#include <memory>
 
 // Underlying UCX fan-in queue
 #include "ucx_queue.hpp"
@@ -47,6 +48,11 @@ public:
     const void* data() const { return storage_.data(); }
     size_t size() const { return storage_.size(); }
     void resize(size_t n) { storage_.resize(n); }
+    void assign(std::vector<uint8_t>&& bytes) { storage_ = std::move(bytes); }
+    void assign(const void* src, size_t len) {
+        storage_.resize(len);
+        if (len) std::memcpy(storage_.data(), src, len);
+    }
     std::string to_string() const { return std::string(reinterpret_cast<const char*>(storage_.data()), storage_.size()); }
 
 private:
@@ -85,10 +91,12 @@ public:
 private:
     // Internal helpers
     static void parse_tcp_endpoint(const std::string& endpoint, std::string& ip, int& port);
+    static constexpr uint32_t kMultipartMagic = 0x55435851; // 'UCXQ'
 
     // Multipart staging for send()
     std::vector<uint8_t> multipart_staging_;
     bool multipart_open_ = false;
+    uint32_t multipart_frame_count_ = 0;
 
     socket_type type_;
     // UCX queue components
@@ -97,5 +105,3 @@ private:
 };
 
 } // namespace ucxq
-
-

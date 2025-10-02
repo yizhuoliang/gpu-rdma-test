@@ -8,6 +8,7 @@ namespace ucxq {
 
 namespace {
 // Wire framing for multipart messages:
+// [uint32_t magic = kMultipartMagic]
 // [uint32_t num_frames]
 //   repeat num_frames times:
 //     [uint32_t frame_len][frame_bytes]
@@ -24,6 +25,11 @@ static uint32_t read_u32(const uint8_t* p) {
     uint32_t be;
     std::memcpy(&be, p, sizeof(be));
     return ntohl(be);
+}
+
+static void store_u32(std::vector<uint8_t>& v, size_t offset, uint32_t value) {
+    uint32_t be = htonl(value);
+    std::memcpy(v.data() + offset, &be, sizeof(be));
 }
 }
 
@@ -71,35 +77,39 @@ void socket_t::connect(const std::string& endpoint) {
 
 bool socket_t::send(buffer_view buf, send_flags::type flags) {
     if (type_ != socket_type::push || !sender_) return false;
+
+    auto append_frame = [&](buffer_view frame) {
+        append_u32(multipart_staging_, static_cast<uint32_t>(frame.size));
+        if (frame.size && frame.data != nullptr) {
+            const uint8_t* p = reinterpret_cast<const uint8_t*>(frame.data);
+            multipart_staging_.insert(multipart_staging_.end(), p, p + frame.size);
+        }
+        ++multipart_frame_count_;
+        store_u32(multipart_staging_, sizeof(uint32_t), multipart_frame_count_);
+    };
+
     if (flags == send_flags::sndmore) {
-        // Buffer up as part of multipart message
         if (!multipart_open_) {
             multipart_staging_.clear();
+            multipart_staging_.reserve(sizeof(uint32_t) * 2 + buf.size);
+            append_u32(multipart_staging_, kMultipartMagic);
             append_u32(multipart_staging_, 0); // placeholder for num_frames
+            multipart_frame_count_ = 0;
             multipart_open_ = true;
         }
-        // Increment num_frames in place
-        uint32_t num = read_u32(multipart_staging_.data());
-        ++num;
-        uint32_t be = htonl(num);
-        std::memcpy(multipart_staging_.data(), &be, sizeof(be));
-        append_u32(multipart_staging_, static_cast<uint32_t>(buf.size));
-        const uint8_t* p = reinterpret_cast<const uint8_t*>(buf.data);
-        multipart_staging_.insert(multipart_staging_.end(), p, p + buf.size);
+        append_frame(buf);
         return true;
     }
 
     if (multipart_open_) {
-        // This is the last frame: finalize and send all
-        uint32_t num = read_u32(multipart_staging_.data());
-        (void)num;
+        append_frame(buf);
         sender_->send(multipart_staging_.data(), multipart_staging_.size());
         multipart_staging_.clear();
         multipart_open_ = false;
+        multipart_frame_count_ = 0;
         return true;
     }
 
-    // Single-frame path: send directly
     sender_->send(buf.data, buf.size);
     return true;
 }
@@ -109,13 +119,10 @@ recv_result_t socket_t::recv(message_t& msg, recv_flags::type /*flags*/) {
     ucxq::Message m;
     if (!receiver_->dequeue(m)) return std::nullopt;
 
-    // Detect if this is a framed multipart packet. If so, do not unpack here.
-    // Single-frame path: just deliver payload.
-    msg.resize(m.data.size());
-    if (!m.data.empty()) {
-        std::memcpy(msg.data(), m.data.data(), m.data.size());
-    }
-    return recv_result_t{m.data.size()};
+    // Deliver payload as-is. Callers needing multipart semantics should use recv_multipart().
+    const size_t bytes = m.data.size();
+    msg.assign(std::move(m.data));
+    return recv_result_t{bytes};
 }
 
 recv_result_t socket_t::recv_multipart(std::vector<message_t>& out_frames) {
@@ -123,36 +130,40 @@ recv_result_t socket_t::recv_multipart(std::vector<message_t>& out_frames) {
     ucxq::Message m;
     if (!receiver_->dequeue(m)) return std::nullopt;
 
-    if (m.data.size() < 4) {
-        // Treat as a single frame if not enough bytes for header
+    std::vector<uint8_t> payload = std::move(m.data);
+    if (payload.size() < sizeof(uint32_t) * 2) {
         out_frames.clear();
-        out_frames.emplace_back(m.data.size());
-        if (!m.data.empty()) {
-            std::memcpy(out_frames.back().data(), m.data.data(), m.data.size());
-        }
+        out_frames.emplace_back();
+        out_frames.back().assign(std::move(payload));
         return recv_result_t{1};
     }
 
-    const uint8_t* p = m.data.data();
-    const uint8_t* end = p + m.data.size();
+    const uint8_t* p = payload.data();
+    const uint8_t* end = p + payload.size();
+    uint32_t magic = read_u32(p);
+    p += sizeof(uint32_t);
+    if (magic != kMultipartMagic) {
+        out_frames.clear();
+        out_frames.emplace_back();
+        out_frames.back().assign(std::move(payload));
+        return recv_result_t{1};
+    }
+
     uint32_t num_frames = read_u32(p);
-    p += 4;
+    p += sizeof(uint32_t);
 
     out_frames.clear();
     out_frames.reserve(num_frames);
     for (uint32_t i = 0; i < num_frames; ++i) {
-        if (p + 4 > end) break;
+        if (p + sizeof(uint32_t) > end) break;
         uint32_t len = read_u32(p);
-        p += 4;
+        p += sizeof(uint32_t);
         if (p + len > end) break;
-        out_frames.emplace_back(len);
-        if (len) std::memcpy(out_frames.back().data(), p, len);
+        out_frames.emplace_back();
+        out_frames.back().assign(p, len);
         p += len;
     }
     return recv_result_t{out_frames.size()};
 }
 
 } // namespace ucxq
-
-
-
