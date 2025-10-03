@@ -27,12 +27,6 @@ struct send_flags {
     };
 };
 
-struct recv_flags {
-    enum type : int {
-        none = 0,
-    };
-};
-
 // Buffer view helpers mimicking zmq::buffer/str_buffer
 struct buffer_view {
     const void* data;
@@ -158,18 +152,12 @@ private:
     ucp_ep_h ep_ = nullptr;
 };
 
-// Context is a thin wrapper to follow zmq::context_t API surface
-class context_t {
-public:
-    explicit context_t(size_t /*threads*/) {}
-};
-
 enum class socket_type { push, pull };
 
 // ZMQ-like socket that maps PUSH to sender and PULL to receiver.
 class socket_t {
 public:
-    socket_t(context_t& /*ctx*/, socket_type type);
+    explicit socket_t(socket_type type);
     ~socket_t();
 
     // Bind for receivers (pull). Endpoint format: tcp://IP:PORT
@@ -182,7 +170,7 @@ public:
     bool send(buffer_view buf, send_flags::type flags = send_flags::none);
 
     // Receive single frame (used for tensor data path)
-    recv_result_t recv(message_t& msg, recv_flags::type flags = recv_flags::none);
+    recv_result_t recv(message_t& msg);
 
     // Receive multipart (peer_id + metadata). Returns number of frames.
     recv_result_t recv_multipart(std::vector<message_t>& out_frames);

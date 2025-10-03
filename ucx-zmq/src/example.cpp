@@ -122,19 +122,19 @@ int open_control_client(const char* ip, int port) {
 
 // Transport traits for UCXQ
 struct UcxTransport {
-    using Context = ucxq::context_t;
+    struct Context {};
     using PushSocket = ucxq::socket_t;
     using PullSocket = ucxq::socket_t;
     using Message = ucxq::message_t;
 
-    static Context create_context() { return Context(1); }
-    static PullSocket make_pull(Context& ctx) { return PullSocket(ctx, ucxq::socket_type::pull); }
-    static PushSocket make_push(Context& ctx) { return PushSocket(ctx, ucxq::socket_type::push); }
+    static Context create_context() { return Context{}; }
+    static PullSocket make_pull(Context& /*ctx*/) { return PullSocket(ucxq::socket_type::pull); }
+    static PushSocket make_push(Context& /*ctx*/) { return PushSocket(ucxq::socket_type::push); }
     static void bind(PullSocket& sock, const std::string& endpoint) { sock.bind(endpoint); }
     static void connect(PushSocket& sock, const std::string& endpoint) { sock.connect(endpoint); }
     static void send(PushSocket& sock, const uint8_t* data, size_t len) { sock.send(ucxq::buffer(data, len)); }
     static size_t recv(PullSocket& sock, Message& msg) {
-        auto res = sock.recv(msg, ucxq::recv_flags::none);
+        auto res = sock.recv(msg);
         return res ? *res : 0;
     }
     static constexpr const char* prefix() { return "UCXQ"; }

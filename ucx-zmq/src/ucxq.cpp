@@ -412,7 +412,7 @@ size_t FanInQueueSender::endpoint_count() const {
     return ep_ != nullptr ? 1 : 0;
 }
 
-socket_t::socket_t(context_t& /*ctx*/, socket_type type) : type_(type) {}
+socket_t::socket_t(socket_type type) : type_(type) {}
 
 socket_t::~socket_t() {
     if (sender_) sender_->stop();
@@ -496,7 +496,7 @@ bool socket_t::send(buffer_view buf, send_flags::type flags) {
     return true;
 }
 
-recv_result_t socket_t::recv(message_t& msg, recv_flags::type /*flags*/) {
+recv_result_t socket_t::recv(message_t& msg) {
     if (type_ != socket_type::pull || !receiver_) return std::nullopt;
     ucxq::Message m;
     if (!receiver_->dequeue(m)) return std::nullopt;
