@@ -104,11 +104,13 @@ public:
     ~FanInQueueReceiver();
 
     void start();
+    void connect_sender(const std::string& ip, int tcp_port);
     bool dequeue(Message& out);
     size_t endpoint_count() const;
     void stop();
 
 private:
+    void ensure_running();
     void progressThread();
     static void onRecvCallback(void* request, ucs_status_t status, const ucp_tag_recv_info_t* info, void* user_data);
 

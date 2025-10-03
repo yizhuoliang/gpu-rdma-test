@@ -71,19 +71,20 @@ FanInQueueReceiver::FanInQueueReceiver(const std::string& ip, int tcp_port)
 
 FanInQueueReceiver::~FanInQueueReceiver() { stop(); }
 
-void FanInQueueReceiver::start() {
-    if (running_.exchange(true, std::memory_order_acq_rel)) {
-        return;
-    }
+void FanInQueueReceiver::start() { connect_sender(ip_, tcp_port_); }
 
-    progress_thr_ = std::thread(&FanInQueueReceiver::progressThread, this);
+void FanInQueueReceiver::ensure_running() {
+    bool expected = false;
+    if (running_.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        progress_thr_ = std::thread(&FanInQueueReceiver::progressThread, this);
+    }
+}
+
+void FanInQueueReceiver::connect_sender(const std::string& ip, int tcp_port) {
+    ensure_running();
 
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
-        running_.store(false, std::memory_order_release);
-        if (progress_thr_.joinable()) {
-            progress_thr_.join();
-        }
         throw std::runtime_error("socket failed");
     }
 
@@ -92,17 +93,13 @@ void FanInQueueReceiver::start() {
             close(fd);
             fd = -1;
         }
-        running_.store(false, std::memory_order_release);
-        if (progress_thr_.joinable()) {
-            progress_thr_.join();
-        }
         throw std::runtime_error(what);
     };
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(tcp_port_);
-    if (inet_pton(AF_INET, ip_.c_str(), &addr.sin_addr) != 1) {
+    addr.sin_port = htons(tcp_port);
+    if (inet_pton(AF_INET, ip.c_str(), &addr.sin_addr) != 1) {
         fail("inet_pton failed");
     }
 
@@ -491,8 +488,10 @@ void socket_t::connect(const std::string& endpoint) {
     }
     std::string ip; int port = 0;
     parse_tcp_endpoint(endpoint, ip, port);
-    receiver_ = std::make_unique<ucxq::FanInQueueReceiver>(ip, port);
-    receiver_->start();
+    if (!receiver_) {
+        receiver_ = std::make_unique<ucxq::FanInQueueReceiver>(ip, port);
+    }
+    receiver_->connect_sender(ip, port);
 }
 
 bool socket_t::send(buffer_view buf, send_flags::type flags) {

@@ -7,6 +7,7 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <iomanip>
 #include <string>
 #include <thread>
 #include <vector>
@@ -25,7 +26,9 @@ static inline void csv_write_row(std::ofstream& csv, size_t size_bytes, const ch
 namespace {
 
 constexpr uint32_t kControlAck = 0xA5A5A5A5u;
+constexpr uint32_t kControlRegister = 0xC0DEC0DEu;
 constexpr uint32_t kControlTerminate = 0xFFFFFFFFu;
+constexpr int kSenderPortOffset = 2;
 
 bool send_u32(int fd, uint32_t value) {
     uint32_t be = htonl(value);
@@ -54,6 +57,36 @@ bool recv_u32(int fd, uint32_t& value) {
     }
     value = ntohl(be);
     return true;
+}
+
+bool send_bytes(int fd, const void* data, size_t len) {
+    const uint8_t* ptr = static_cast<const uint8_t*>(data);
+    size_t sent = 0;
+    while (sent < len) {
+        ssize_t rc = ::send(fd, ptr + sent, len - sent, 0);
+        if (rc <= 0) {
+            return false;
+        }
+        sent += static_cast<size_t>(rc);
+    }
+    return true;
+}
+
+bool recv_bytes(int fd, void* data, size_t len) {
+    uint8_t* ptr = static_cast<uint8_t*>(data);
+    size_t received = 0;
+    while (received < len) {
+        ssize_t rc = ::recv(fd, ptr + received, len - received, 0);
+        if (rc <= 0) {
+            return false;
+        }
+        received += static_cast<size_t>(rc);
+    }
+    return true;
+}
+
+std::string make_endpoint(const std::string& ip, int port) {
+    return std::string("tcp://") + ip + ":" + std::to_string(port);
 }
 
 int open_control_listener(const char* ip, int port) {
@@ -130,8 +163,8 @@ struct UcxTransport {
     static Context create_context() { return Context{}; }
     static PullSocket make_pull(Context& /*ctx*/) { return PullSocket(ucxq::socket_type::pull); }
     static PushSocket make_push(Context& /*ctx*/) { return PushSocket(ucxq::socket_type::push); }
-    static void bind(PullSocket& sock, const std::string& endpoint) { sock.bind(endpoint); }
-    static void connect(PushSocket& sock, const std::string& endpoint) { sock.connect(endpoint); }
+    static void receiver_connect(PullSocket& sock, const std::string& endpoint) { sock.connect(endpoint); }
+    static void sender_bind(PushSocket& sock, const std::string& endpoint) { sock.bind(endpoint); }
     static void send(PushSocket& sock, const uint8_t* data, size_t len) { sock.send(ucxq::buffer(data, len)); }
     static size_t recv(PullSocket& sock, Message& msg) {
         auto res = sock.recv(msg);
@@ -152,8 +185,8 @@ struct ZmqTransport {
     static Context create_context() { return Context(1); }
     static PullSocket make_pull(Context& ctx) { return PullSocket(ctx, zmq::socket_type::pull); }
     static PushSocket make_push(Context& ctx) { return PushSocket(ctx, zmq::socket_type::push); }
-    static void bind(PullSocket& sock, const std::string& endpoint) { sock.bind(endpoint); }
-    static void connect(PushSocket& sock, const std::string& endpoint) { sock.connect(endpoint); }
+    static void receiver_connect(PullSocket& sock, const std::string& endpoint) { sock.connect(endpoint); }
+    static void sender_bind(PushSocket& sock, const std::string& endpoint) { sock.bind(endpoint); }
     static void send(PushSocket& sock, const uint8_t* data, size_t len) { sock.send(zmq::buffer(data, len), zmq::send_flags::none); }
     static size_t recv(PullSocket& sock, Message& msg) {
         auto res = sock.recv(msg, zmq::recv_flags::none);
@@ -167,7 +200,8 @@ struct ZmqTransport {
 template <typename Transport>
 void run_local_fanin(typename Transport::Context& ctx,
                      typename Transport::PullSocket& pull,
-                     const std::string& endpoint,
+                     const std::string& bind_ip,
+                     int base_port,
                      size_t num_local_senders,
                      const std::vector<size_t>& sizes,
                      int rounds,
@@ -176,6 +210,14 @@ void run_local_fanin(typename Transport::Context& ctx,
                      std::ofstream* csv) {
     if (num_local_senders == 0) {
         return;
+    }
+
+    const int first_sender_port = base_port + kSenderPortOffset;
+    std::vector<std::string> sender_endpoints;
+    sender_endpoints.reserve(num_local_senders);
+    for (size_t i = 0; i < num_local_senders; ++i) {
+        int listen_port = first_sender_port + static_cast<int>(i);
+        sender_endpoints.push_back(make_endpoint(bind_ip, listen_port));
     }
 
     std::atomic<size_t> size_index{0};
@@ -187,9 +229,10 @@ void run_local_fanin(typename Transport::Context& ctx,
     workers.reserve(num_local_senders);
 
     for (size_t i = 0; i < num_local_senders; ++i) {
-        workers.emplace_back([&, endpoint] {
+        std::string sender_endpoint = sender_endpoints[i];
+        workers.emplace_back([&, sender_endpoint] {
             auto push = Transport::make_push(ctx);
-            Transport::connect(push, endpoint);
+            Transport::sender_bind(push, sender_endpoint);
             while (!start_local.load(std::memory_order_acquire)) {
                 std::this_thread::yield();
             }
@@ -214,6 +257,10 @@ void run_local_fanin(typename Transport::Context& ctx,
                 }
             }
         });
+    }
+
+    for (const auto& ep : sender_endpoints) {
+        Transport::receiver_connect(pull, ep);
     }
 
     start_local.store(true, std::memory_order_release);
@@ -264,9 +311,56 @@ void run_remote_server(typename Transport::PullSocket& pull,
         return;
     }
 
+    size_t active_remote_senders = num_remote_senders;
+
+    uint32_t token = 0;
+    if (!recv_u32(ctrl_fd, token)) {
+        std::cerr << "Failed to receive control preamble" << std::endl;
+        return;
+    }
+
+    std::vector<std::string> remote_endpoints;
     uint32_t ack = 0;
-    if (!recv_u32(ctrl_fd, ack) || ack != kControlAck) {
-        std::cerr << "Failed to receive remote ready ack" << std::endl;
+    if (token == kControlRegister) {
+        uint32_t count = 0;
+        if (!recv_u32(ctrl_fd, count)) {
+            std::cerr << "Failed to receive remote sender count" << std::endl;
+            return;
+        }
+        if (count != num_remote_senders) {
+            std::cerr << "Remote sender count mismatch: expected " << num_remote_senders
+                      << " but got " << count << std::endl;
+        }
+        remote_endpoints.resize(count);
+        if (!remote_endpoints.empty()) {
+            active_remote_senders = remote_endpoints.size();
+        }
+        for (uint32_t i = 0; i < count; ++i) {
+            uint32_t len = 0;
+            if (!recv_u32(ctrl_fd, len)) {
+                std::cerr << "Failed to receive endpoint length" << std::endl;
+                return;
+            }
+            std::string endpoint(len, '\0');
+            if (!recv_bytes(ctrl_fd, endpoint.data(), len)) {
+                std::cerr << "Failed to receive endpoint string" << std::endl;
+                return;
+            }
+            remote_endpoints[i] = std::move(endpoint);
+        }
+        for (const auto& ep : remote_endpoints) {
+            Transport::receiver_connect(pull, ep);
+        }
+        if (!recv_u32(ctrl_fd, ack)) {
+            std::cerr << "Failed to receive remote ready ack" << std::endl;
+            return;
+        }
+    } else {
+        ack = token;
+    }
+
+    if (ack != kControlAck) {
+        std::cerr << "Unexpected control token " << std::hex << ack << std::dec << std::endl;
         return;
     }
 
@@ -278,7 +372,7 @@ void run_remote_server(typename Transport::PullSocket& pull,
                 std::cerr << "Failed to send control token" << std::endl;
                 return;
             }
-            size_t expected = num_remote_senders * static_cast<size_t>(rounds);
+            size_t expected = active_remote_senders * static_cast<size_t>(rounds);
             auto t0 = clock_type::now();
             size_t got = 0;
             while (got < expected) {
@@ -302,13 +396,22 @@ void run_remote_server(typename Transport::PullSocket& pull,
 
 template <typename Transport>
 void run_remote_client(typename Transport::Context& ctx,
-                       const std::string& endpoint,
+                       const std::string& listen_ip,
+                       int base_port,
                        int ctrl_fd,
                        size_t num_remote_senders,
                        const std::vector<size_t>& sizes,
                        int rounds) {
     if (num_remote_senders == 0) {
         return;
+    }
+
+    const int first_sender_port = base_port + kSenderPortOffset;
+    std::vector<std::string> sender_endpoints;
+    sender_endpoints.reserve(num_remote_senders);
+    for (size_t i = 0; i < num_remote_senders; ++i) {
+        int listen_port = first_sender_port + static_cast<int>(i);
+        sender_endpoints.push_back(make_endpoint(listen_ip, listen_port));
     }
 
     std::atomic<size_t> size_index{0};
@@ -320,9 +423,10 @@ void run_remote_client(typename Transport::Context& ctx,
     std::vector<std::thread> senders;
     senders.reserve(num_remote_senders);
     for (size_t i = 0; i < num_remote_senders; ++i) {
-        senders.emplace_back([&, endpoint] {
+        std::string sender_endpoint = sender_endpoints[i];
+        senders.emplace_back([&, sender_endpoint] {
             auto push = Transport::make_push(ctx);
-            Transport::connect(push, endpoint);
+            Transport::sender_bind(push, sender_endpoint);
             while (!start_remote.load(std::memory_order_acquire)) {
                 std::this_thread::yield();
             }
@@ -350,12 +454,38 @@ void run_remote_client(typename Transport::Context& ctx,
         });
     }
 
+    if (!send_u32(ctrl_fd, kControlRegister)) {
+        std::cerr << "Failed to send control register opcode" << std::endl;
+        done.store(true, std::memory_order_release);
+    } else if (!send_u32(ctrl_fd, static_cast<uint32_t>(num_remote_senders))) {
+        std::cerr << "Failed to send remote sender count" << std::endl;
+        done.store(true, std::memory_order_release);
+    } else {
+        for (const auto& ep : sender_endpoints) {
+            uint32_t len = static_cast<uint32_t>(ep.size());
+            if (!send_u32(ctrl_fd, len) || !send_bytes(ctrl_fd, ep.data(), ep.size())) {
+                std::cerr << "Failed to send remote endpoint" << std::endl;
+                done.store(true, std::memory_order_release);
+                break;
+            }
+        }
+    }
+
+    if (done.load(std::memory_order_acquire)) {
+        for (auto& th : senders) {
+            th.join();
+        }
+        return;
+    }
+
     start_remote.store(true, std::memory_order_release);
     while (started_remote.load(std::memory_order_acquire) < num_remote_senders) {
         std::this_thread::yield();
     }
 
-    send_u32(ctrl_fd, kControlAck);
+    if (!done.load(std::memory_order_acquire)) {
+        send_u32(ctrl_fd, kControlAck);
+    }
 
     for (;;) {
         uint32_t token = 0;
@@ -383,7 +513,8 @@ void run_remote_client(typename Transport::Context& ctx,
 
 template <typename Transport>
 void run_fanin_all(bool isServer,
-                   const char* ip,
+                   const std::string& server_ip,
+                   const std::string& listen_ip,
                    int port,
                    size_t num_local_senders,
                    size_t num_remote_senders,
@@ -394,14 +525,12 @@ void run_fanin_all(bool isServer,
                    int warmup) {
     using Context = typename Transport::Context;
     Context ctx = Transport::create_context();
-    std::string endpoint = std::string("tcp://") + ip + ":" + std::to_string(port);
 
     if (isServer) {
         auto pull = Transport::make_pull(ctx);
-        Transport::bind(pull, endpoint);
-        run_local_fanin<Transport>(ctx, pull, endpoint, num_local_senders, sizes, rounds, repeats, warmup, csv);
+        run_local_fanin<Transport>(ctx, pull, listen_ip, port, num_local_senders, sizes, rounds, repeats, warmup, csv);
         if (num_remote_senders > 0) {
-            int ctrl_fd = open_control_listener(ip, port + 1);
+            int ctrl_fd = open_control_listener(server_ip.c_str(), port + 1);
             if (ctrl_fd >= 0) {
                 run_remote_server<Transport>(pull, ctrl_fd, num_remote_senders, sizes, rounds, repeats, warmup, csv);
                 close(ctrl_fd);
@@ -409,9 +538,9 @@ void run_fanin_all(bool isServer,
         }
     } else {
         if (num_remote_senders > 0) {
-            int ctrl_fd = open_control_client(ip, port + 1);
+            int ctrl_fd = open_control_client(server_ip.c_str(), port + 1);
             if (ctrl_fd >= 0) {
-                run_remote_client<Transport>(ctx, endpoint, ctrl_fd, num_remote_senders, sizes, rounds);
+                run_remote_client<Transport>(ctx, listen_ip, port, ctrl_fd, num_remote_senders, sizes, rounds);
                 close(ctrl_fd);
             }
         }
@@ -421,20 +550,53 @@ void run_fanin_all(bool isServer,
 } // namespace
 
 int main(int argc, char** argv) {
+    auto print_usage = [] {
+        std::cerr << "Usage:\n"
+                  << "  ucxq_example server [bind_ip] [port] [local_threads] [remote_threads]\n"
+                  << "  ucxq_example client <server_ip> <advertise_ip> [port] [remote_threads]\n";
+    };
+
     if (argc < 2) {
-        std::cerr << "Usage: ucxq_example server|client" << std::endl;
-        return 1;
-    }
-    bool isServer = std::string(argv[1]) == "server";
-    if (!isServer && std::string(argv[1]) != "client") {
-        std::cerr << "Usage: ucxq_example server|client" << std::endl;
+        print_usage();
         return 1;
     }
 
-    const char* ip = "10.10.2.1";
+    bool isServer = std::string(argv[1]) == "server";
+    bool isClient = std::string(argv[1]) == "client";
+    if (!isServer && !isClient) {
+        print_usage();
+        return 1;
+    }
+
     int port = 61000;
     size_t local_threads = 16;
     size_t remote_threads = 16;
+    std::string server_ip;
+    std::string advertise_ip;
+
+    try {
+        if (isServer) {
+            server_ip = (argc >= 3) ? argv[2] : "127.0.0.1";
+            advertise_ip = server_ip;
+            if (argc >= 4) port = std::stoi(argv[3]);
+            if (argc >= 5) local_threads = static_cast<size_t>(std::stoul(argv[4]));
+            if (argc >= 6) remote_threads = static_cast<size_t>(std::stoul(argv[5]));
+        } else {
+            if (argc < 4) {
+                print_usage();
+                return 1;
+            }
+            server_ip = argv[2];
+            advertise_ip = argv[3];
+            if (argc >= 5) port = std::stoi(argv[4]);
+            if (argc >= 6) remote_threads = static_cast<size_t>(std::stoul(argv[5]));
+            local_threads = 0; // client process hosts only remote senders
+        }
+    } catch (const std::exception& ex) {
+        std::cerr << "Invalid argument: " << ex.what() << std::endl;
+        return 1;
+    }
+
     const std::vector<size_t> sizes = {4096, 8192, 65536, 131072, 1048576};
     int rounds = 20;
     int repeats = 20;
@@ -451,9 +613,9 @@ int main(int argc, char** argv) {
         }
     }
 
-    run_fanin_all<UcxTransport>(isServer, ip, port, local_threads, remote_threads, sizes, rounds, isServer ? &csv : nullptr, repeats, warmup);
+    run_fanin_all<UcxTransport>(isServer, server_ip, advertise_ip, port, local_threads, remote_threads, sizes, rounds, isServer ? &csv : nullptr, repeats, warmup);
     // Uncomment to compare against ZeroMQ baseline using the same harness.
-    // run_fanin_all<ZmqTransport>(isServer, ip, port + 100, local_threads, remote_threads, sizes, rounds, isServer ? &csv : nullptr, repeats, warmup);
+    // run_fanin_all<ZmqTransport>(isServer, server_ip, advertise_ip, port + 100, local_threads, remote_threads, sizes, rounds, isServer ? &csv : nullptr, repeats, warmup);
 
     if (csv.is_open()) {
         csv.close();

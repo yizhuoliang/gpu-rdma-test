@@ -20,6 +20,19 @@ add_library(ucxpp_lib
 target_include_directories(ucxpp_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${UCX_INCLUDE_DIR})
 target_link_libraries(ucxpp_lib PUBLIC ${UCX_UCP_LIBRARY} ${UCX_UCS_LIBRARY} Threads::Threads)
 
+find_path(ZMQ_INCLUDE_DIR zmq.hpp
+  HINTS /usr/include /usr/local/include $ENV{CONDA_PREFIX}/include)
+find_library(ZMQ_LIBRARY NAMES zmq libzmq
+  HINTS /usr/lib /usr/local/lib /usr/lib/x86_64-linux-gnu $ENV{CONDA_PREFIX}/lib)
+if(NOT ZMQ_INCLUDE_DIR OR NOT ZMQ_LIBRARY)
+  message(FATAL_ERROR "Could not find ZeroMQ (requires zmq.hpp and libzmq). Install cppzmq headers and libzmq.")
+endif()
+
+add_executable(ucxq_example src/example.cpp)
+target_include_directories(ucxq_example PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${UCX_INCLUDE_DIR} ${ZMQ_INCLUDE_DIR})
+target_link_libraries(ucxq_example PRIVATE ucxpp_lib ${ZMQ_LIBRARY})
+
 if(DEFINED ENV{CONDA_PREFIX})
   set_target_properties(ucxpp_lib PROPERTIES BUILD_RPATH "$ENV{CONDA_PREFIX}/lib")
+  set_target_properties(ucxq_example PROPERTIES BUILD_RPATH "$ENV{CONDA_PREFIX}/lib")
 endif()
