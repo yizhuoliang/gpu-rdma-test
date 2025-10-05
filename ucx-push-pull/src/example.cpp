@@ -396,22 +396,24 @@ void run_remote_server(typename Transport::PullSocket& pull,
             if (!remote_endpoints.empty()) {
                 active_remote_senders = remote_endpoints.size();
             }
-            for (uint32_t i = 0; i < count; ++i) {
-                uint32_t len = 0;
-                if (!recv_u32(ctrl_fd, len)) {
-                    std::cerr << "Failed to receive endpoint length" << std::endl;
-                    return;
-                }
-                std::string endpoint(len, '\0');
-                if (!recv_bytes(ctrl_fd, endpoint.data(), len)) {
-                    std::cerr << "Failed to receive endpoint string" << std::endl;
-                    return;
-                }
-                remote_endpoints[i] = std::move(endpoint);
+        for (uint32_t i = 0; i < count; ++i) {
+            uint32_t len = 0;
+            if (!recv_u32(ctrl_fd, len)) {
+                std::cerr << "Failed to receive endpoint length" << std::endl;
+                return;
             }
-            for (const auto& ep : remote_endpoints) {
-                Transport::receiver_connect(pull, ep);
+            std::string endpoint(len, '\0');
+            if (!recv_bytes(ctrl_fd, endpoint.data(), len)) {
+                std::cerr << "Failed to receive endpoint string" << std::endl;
+                return;
             }
+            remote_endpoints[i] = std::move(endpoint);
+            std::cout << "[server] received endpoint: " << endpoint << std::endl;
+        }
+        for (const auto& ep : remote_endpoints) {
+            std::cout << "[server] connecting to: " << ep << std::endl;
+            Transport::receiver_connect(pull, ep);
+        }
             if (!recv_u32(ctrl_fd, ack)) {
                 std::cerr << "Failed to receive remote ready ack" << std::endl;
                 return;
@@ -548,14 +550,15 @@ void run_remote_client(typename Transport::Context& ctx,
             std::cerr << "Failed to send remote sender count" << std::endl;
             done.store(true, std::memory_order_release);
         } else {
-            for (const auto& ep : sender_endpoints) {
-                uint32_t len = static_cast<uint32_t>(ep.size());
-                if (!send_u32(ctrl_fd, len) || !send_bytes(ctrl_fd, ep.data(), ep.size())) {
-                    std::cerr << "Failed to send remote endpoint" << std::endl;
-                    done.store(true, std::memory_order_release);
-                    break;
-                }
+        for (const auto& ep : sender_endpoints) {
+            std::cout << "[client] sending endpoint: " << ep << std::endl;
+            uint32_t len = static_cast<uint32_t>(ep.size());
+            if (!send_u32(ctrl_fd, len) || !send_bytes(ctrl_fd, ep.data(), ep.size())) {
+                std::cerr << "Failed to send remote endpoint" << std::endl;
+                done.store(true, std::memory_order_release);
+                break;
             }
+        }
         }
 
         if (done.load(std::memory_order_acquire)) {
