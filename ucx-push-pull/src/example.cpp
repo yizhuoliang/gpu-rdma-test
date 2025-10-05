@@ -25,6 +25,12 @@ static inline void csv_write_row(std::ofstream& csv, size_t size_bytes, const ch
 
 namespace {
 
+enum class Semantics { SenderBind_ReceiverConnect, SenderConnect_ReceiverBind };
+
+static inline const char* semantics_str(Semantics s) {
+    return s == Semantics::SenderBind_ReceiverConnect ? "sb_rc" : "sc_rb";
+}
+
 constexpr uint32_t kControlAck = 0xA5A5A5A5u;
 constexpr uint32_t kControlRegister = 0xC0DEC0DEu;
 constexpr uint32_t kControlTerminate = 0xFFFFFFFFu;
@@ -164,7 +170,9 @@ struct UcxTransport {
     static PullSocket make_pull(Context& /*ctx*/) { return PullSocket(ucxq::socket_type::pull); }
     static PushSocket make_push(Context& /*ctx*/) { return PushSocket(ucxq::socket_type::push); }
     static void receiver_connect(PullSocket& sock, const std::string& endpoint) { sock.connect(endpoint); }
+    static void receiver_bind(PullSocket& sock, const std::string& endpoint) { sock.bind(endpoint); }
     static void sender_bind(PushSocket& sock, const std::string& endpoint) { sock.bind(endpoint); }
+    static void sender_connect(PushSocket& sock, const std::string& endpoint) { sock.connect(endpoint); }
     static void send(PushSocket& sock, const uint8_t* data, size_t len) { sock.send(ucxq::buffer(data, len)); }
     static size_t recv(PullSocket& sock, Message& msg) {
         auto res = sock.recv(msg);
@@ -207,17 +215,24 @@ void run_local_fanin(typename Transport::Context& ctx,
                      int rounds,
                      int repeats,
                      int warmup,
-                     std::ofstream* csv) {
+                     std::ofstream* csv,
+                     Semantics semantics) {
     if (num_local_senders == 0) {
         return;
     }
 
     const int first_sender_port = base_port + kSenderPortOffset;
     std::vector<std::string> sender_endpoints;
-    sender_endpoints.reserve(num_local_senders);
-    for (size_t i = 0; i < num_local_senders; ++i) {
-        int listen_port = first_sender_port + static_cast<int>(i);
-        sender_endpoints.push_back(make_endpoint(bind_ip, listen_port));
+    std::string receiver_endpoint;
+    if (semantics == Semantics::SenderBind_ReceiverConnect) {
+        sender_endpoints.reserve(num_local_senders);
+        for (size_t i = 0; i < num_local_senders; ++i) {
+            int listen_port = first_sender_port + static_cast<int>(i);
+            sender_endpoints.push_back(make_endpoint(bind_ip, listen_port));
+        }
+    } else {
+        // Receiver binds one endpoint; all local senders connect.
+        receiver_endpoint = make_endpoint(bind_ip, base_port);
     }
 
     std::atomic<size_t> size_index{0};
@@ -229,10 +244,14 @@ void run_local_fanin(typename Transport::Context& ctx,
     workers.reserve(num_local_senders);
 
     for (size_t i = 0; i < num_local_senders; ++i) {
-        std::string sender_endpoint = sender_endpoints[i];
-        workers.emplace_back([&, sender_endpoint] {
+        std::string ep = (semantics == Semantics::SenderBind_ReceiverConnect) ? sender_endpoints[i] : receiver_endpoint;
+        workers.emplace_back([&, ep] {
             auto push = Transport::make_push(ctx);
-            Transport::sender_bind(push, sender_endpoint);
+            if (semantics == Semantics::SenderBind_ReceiverConnect) {
+                Transport::sender_bind(push, ep);
+            } else {
+                Transport::sender_connect(push, ep);
+            }
             while (!start_local.load(std::memory_order_acquire)) {
                 std::this_thread::yield();
             }
@@ -259,8 +278,12 @@ void run_local_fanin(typename Transport::Context& ctx,
         });
     }
 
-    for (const auto& ep : sender_endpoints) {
-        Transport::receiver_connect(pull, ep);
+    if (semantics == Semantics::SenderBind_ReceiverConnect) {
+        for (const auto& ep : sender_endpoints) {
+            Transport::receiver_connect(pull, ep);
+        }
+    } else {
+        Transport::receiver_bind(pull, receiver_endpoint);
     }
 
     start_local.store(true, std::memory_order_release);
@@ -269,7 +292,7 @@ void run_local_fanin(typename Transport::Context& ctx,
     }
 
     typename Transport::Message msg;
-    std::string label = std::string(Transport::prefix()) + "_local";
+    std::string label = std::string(Transport::prefix()) + "_local_" + semantics_str(semantics);
     for (size_t si = 0; si < sizes.size(); ++si) {
         for (int rep = 1; rep <= repeats + warmup; ++rep) {
             size_index.store(si, std::memory_order_release);
@@ -306,66 +329,86 @@ void run_remote_server(typename Transport::PullSocket& pull,
                        int rounds,
                        int repeats,
                        int warmup,
-                       std::ofstream* csv) {
+                       std::ofstream* csv,
+                       Semantics semantics,
+                       const std::string& server_ip,
+                       int base_port) {
     if (num_remote_senders == 0) {
         return;
     }
 
     size_t active_remote_senders = num_remote_senders;
-
-    uint32_t token = 0;
-    if (!recv_u32(ctrl_fd, token)) {
-        std::cerr << "Failed to receive control preamble" << std::endl;
-        return;
-    }
-
-    std::vector<std::string> remote_endpoints;
-    uint32_t ack = 0;
-    if (token == kControlRegister) {
-        uint32_t count = 0;
-        if (!recv_u32(ctrl_fd, count)) {
-            std::cerr << "Failed to receive remote sender count" << std::endl;
+    if (semantics == Semantics::SenderBind_ReceiverConnect) {
+        uint32_t token = 0;
+        if (!recv_u32(ctrl_fd, token)) {
+            std::cerr << "Failed to receive control preamble" << std::endl;
             return;
         }
-        if (count != num_remote_senders) {
-            std::cerr << "Remote sender count mismatch: expected " << num_remote_senders
-                      << " but got " << count << std::endl;
-        }
-        remote_endpoints.resize(count);
-        if (!remote_endpoints.empty()) {
-            active_remote_senders = remote_endpoints.size();
-        }
-        for (uint32_t i = 0; i < count; ++i) {
-            uint32_t len = 0;
-            if (!recv_u32(ctrl_fd, len)) {
-                std::cerr << "Failed to receive endpoint length" << std::endl;
+        std::vector<std::string> remote_endpoints;
+        uint32_t ack = 0;
+        if (token == kControlRegister) {
+            uint32_t count = 0;
+            if (!recv_u32(ctrl_fd, count)) {
+                std::cerr << "Failed to receive remote sender count" << std::endl;
                 return;
             }
-            std::string endpoint(len, '\0');
-            if (!recv_bytes(ctrl_fd, endpoint.data(), len)) {
-                std::cerr << "Failed to receive endpoint string" << std::endl;
+            if (count != num_remote_senders) {
+                std::cerr << "Remote sender count mismatch: expected " << num_remote_senders
+                          << " but got " << count << std::endl;
+            }
+            remote_endpoints.resize(count);
+            if (!remote_endpoints.empty()) {
+                active_remote_senders = remote_endpoints.size();
+            }
+            for (uint32_t i = 0; i < count; ++i) {
+                uint32_t len = 0;
+                if (!recv_u32(ctrl_fd, len)) {
+                    std::cerr << "Failed to receive endpoint length" << std::endl;
+                    return;
+                }
+                std::string endpoint(len, '\0');
+                if (!recv_bytes(ctrl_fd, endpoint.data(), len)) {
+                    std::cerr << "Failed to receive endpoint string" << std::endl;
+                    return;
+                }
+                remote_endpoints[i] = std::move(endpoint);
+            }
+            for (const auto& ep : remote_endpoints) {
+                Transport::receiver_connect(pull, ep);
+            }
+            if (!recv_u32(ctrl_fd, ack)) {
+                std::cerr << "Failed to receive remote ready ack" << std::endl;
                 return;
             }
-            remote_endpoints[i] = std::move(endpoint);
+        } else {
+            ack = token;
         }
-        for (const auto& ep : remote_endpoints) {
-            Transport::receiver_connect(pull, ep);
-        }
-        if (!recv_u32(ctrl_fd, ack)) {
-            std::cerr << "Failed to receive remote ready ack" << std::endl;
+        if (ack != kControlAck) {
+            std::cerr << "Unexpected control token " << std::hex << ack << std::dec << std::endl;
             return;
         }
     } else {
-        ack = token;
-    }
-
-    if (ack != kControlAck) {
-        std::cerr << "Unexpected control token " << std::hex << ack << std::dec << std::endl;
-        return;
+        // Receiver bind, sender connect: server tells client the endpoint to connect to.
+        const std::string ep = make_endpoint(server_ip, base_port);
+        Transport::receiver_bind(pull, ep);
+        if (!send_u32(ctrl_fd, kControlRegister)) {
+            std::cerr << "Failed to send control register" << std::endl;
+            return;
+        }
+        uint32_t len = static_cast<uint32_t>(ep.size());
+        if (!send_u32(ctrl_fd, len) || !send_bytes(ctrl_fd, ep.data(), ep.size())) {
+            std::cerr << "Failed to send receiver endpoint" << std::endl;
+            return;
+        }
+        uint32_t ack = 0;
+        if (!recv_u32(ctrl_fd, ack) || ack != kControlAck) {
+            std::cerr << "Failed to receive ack for receiver endpoint" << std::endl;
+            return;
+        }
     }
 
     typename Transport::Message msg;
-    std::string label = std::string(Transport::prefix()) + "_remote";
+    std::string label = std::string(Transport::prefix()) + "_remote_" + semantics_str(semantics);
     for (size_t si = 0; si < sizes.size(); ++si) {
         for (int rep = 1; rep <= repeats + warmup; ++rep) {
             if (!send_u32(ctrl_fd, static_cast<uint32_t>(si))) {
@@ -401,17 +444,10 @@ void run_remote_client(typename Transport::Context& ctx,
                        int ctrl_fd,
                        size_t num_remote_senders,
                        const std::vector<size_t>& sizes,
-                       int rounds) {
+                       int rounds,
+                       Semantics semantics) {
     if (num_remote_senders == 0) {
         return;
-    }
-
-    const int first_sender_port = base_port + kSenderPortOffset;
-    std::vector<std::string> sender_endpoints;
-    sender_endpoints.reserve(num_remote_senders);
-    for (size_t i = 0; i < num_remote_senders; ++i) {
-        int listen_port = first_sender_port + static_cast<int>(i);
-        sender_endpoints.push_back(make_endpoint(listen_ip, listen_port));
     }
 
     std::atomic<size_t> size_index{0};
@@ -421,69 +457,137 @@ void run_remote_client(typename Transport::Context& ctx,
     std::atomic<size_t> started_remote{0};
 
     std::vector<std::thread> senders;
-    senders.reserve(num_remote_senders);
-    for (size_t i = 0; i < num_remote_senders; ++i) {
-        std::string sender_endpoint = sender_endpoints[i];
-        senders.emplace_back([&, sender_endpoint] {
-            auto push = Transport::make_push(ctx);
-            Transport::sender_bind(push, sender_endpoint);
-            while (!start_remote.load(std::memory_order_acquire)) {
-                std::this_thread::yield();
-            }
-            uint64_t seen = round_id.load(std::memory_order_acquire);
-            started_remote.fetch_add(1, std::memory_order_acq_rel);
-            std::vector<uint8_t> payload;
-            while (!done.load(std::memory_order_acquire)) {
-                while (round_id.load(std::memory_order_acquire) == seen && !done.load(std::memory_order_acquire)) {
+
+    if (semantics == Semantics::SenderBind_ReceiverConnect) {
+        const int first_sender_port = base_port + kSenderPortOffset;
+        std::vector<std::string> sender_endpoints;
+        sender_endpoints.reserve(num_remote_senders);
+        for (size_t i = 0; i < num_remote_senders; ++i) {
+            int listen_port = first_sender_port + static_cast<int>(i);
+            sender_endpoints.push_back(make_endpoint(listen_ip, listen_port));
+        }
+
+        senders.reserve(num_remote_senders);
+        for (size_t i = 0; i < num_remote_senders; ++i) {
+            std::string sender_endpoint = sender_endpoints[i];
+            senders.emplace_back([&, sender_endpoint] {
+                auto push = Transport::make_push(ctx);
+                Transport::sender_bind(push, sender_endpoint);
+                while (!start_remote.load(std::memory_order_acquire)) {
                     std::this_thread::yield();
                 }
-                if (done.load(std::memory_order_acquire)) {
-                    break;
+                uint64_t seen = round_id.load(std::memory_order_acquire);
+                started_remote.fetch_add(1, std::memory_order_acq_rel);
+                std::vector<uint8_t> payload;
+                while (!done.load(std::memory_order_acquire)) {
+                    while (round_id.load(std::memory_order_acquire) == seen && !done.load(std::memory_order_acquire)) {
+                        std::this_thread::yield();
+                    }
+                    if (done.load(std::memory_order_acquire)) {
+                        break;
+                    }
+                    seen = round_id.load(std::memory_order_acquire);
+                    size_t idx = size_index.load(std::memory_order_acquire);
+                    if (idx >= sizes.size()) {
+                        break;
+                    }
+                    size_t msg_bytes = sizes[idx];
+                    payload.assign(msg_bytes, Transport::remote_fill());
+                    for (int r = 0; r < rounds; ++r) {
+                        Transport::send(push, payload.data(), payload.size());
+                    }
                 }
-                seen = round_id.load(std::memory_order_acquire);
-                size_t idx = size_index.load(std::memory_order_acquire);
-                if (idx >= sizes.size()) {
+            });
+        }
+
+        if (!send_u32(ctrl_fd, kControlRegister)) {
+            std::cerr << "Failed to send control register opcode" << std::endl;
+            done.store(true, std::memory_order_release);
+        } else if (!send_u32(ctrl_fd, static_cast<uint32_t>(num_remote_senders))) {
+            std::cerr << "Failed to send remote sender count" << std::endl;
+            done.store(true, std::memory_order_release);
+        } else {
+            for (const auto& ep : sender_endpoints) {
+                uint32_t len = static_cast<uint32_t>(ep.size());
+                if (!send_u32(ctrl_fd, len) || !send_bytes(ctrl_fd, ep.data(), ep.size())) {
+                    std::cerr << "Failed to send remote endpoint" << std::endl;
+                    done.store(true, std::memory_order_release);
                     break;
-                }
-                size_t msg_bytes = sizes[idx];
-                payload.assign(msg_bytes, Transport::remote_fill());
-                for (int r = 0; r < rounds; ++r) {
-                    Transport::send(push, payload.data(), payload.size());
                 }
             }
-        });
-    }
+        }
 
-    if (!send_u32(ctrl_fd, kControlRegister)) {
-        std::cerr << "Failed to send control register opcode" << std::endl;
-        done.store(true, std::memory_order_release);
-    } else if (!send_u32(ctrl_fd, static_cast<uint32_t>(num_remote_senders))) {
-        std::cerr << "Failed to send remote sender count" << std::endl;
-        done.store(true, std::memory_order_release);
+        if (done.load(std::memory_order_acquire)) {
+            for (auto& th : senders) {
+                th.join();
+            }
+            return;
+        }
+
+        start_remote.store(true, std::memory_order_release);
+        while (started_remote.load(std::memory_order_acquire) < num_remote_senders) {
+            std::this_thread::yield();
+        }
+
+        if (!done.load(std::memory_order_acquire)) {
+            send_u32(ctrl_fd, kControlAck);
+        }
     } else {
-        for (const auto& ep : sender_endpoints) {
-            uint32_t len = static_cast<uint32_t>(ep.size());
-            if (!send_u32(ctrl_fd, len) || !send_bytes(ctrl_fd, ep.data(), ep.size())) {
-                std::cerr << "Failed to send remote endpoint" << std::endl;
-                done.store(true, std::memory_order_release);
-                break;
-            }
+        // Wait for server to send receiver endpoint, then connect senders.
+        uint32_t token = 0;
+        if (!recv_u32(ctrl_fd, token) || token != kControlRegister) {
+            std::cerr << "Failed to receive control register from server" << std::endl;
+            return;
         }
-    }
-
-    if (done.load(std::memory_order_acquire)) {
-        for (auto& th : senders) {
-            th.join();
+        uint32_t len = 0;
+        if (!recv_u32(ctrl_fd, len)) {
+            std::cerr << "Failed to receive receiver endpoint length" << std::endl;
+            return;
         }
-        return;
-    }
+        std::string receiver_ep(len, '\0');
+        if (!recv_bytes(ctrl_fd, receiver_ep.data(), len)) {
+            std::cerr << "Failed to receive receiver endpoint" << std::endl;
+            return;
+        }
 
-    start_remote.store(true, std::memory_order_release);
-    while (started_remote.load(std::memory_order_acquire) < num_remote_senders) {
-        std::this_thread::yield();
-    }
+        senders.reserve(num_remote_senders);
+        for (size_t i = 0; i < num_remote_senders; ++i) {
+            std::string ep = receiver_ep;
+            senders.emplace_back([&, ep] {
+                auto push = Transport::make_push(ctx);
+                Transport::sender_connect(push, ep);
+                while (!start_remote.load(std::memory_order_acquire)) {
+                    std::this_thread::yield();
+                }
+                uint64_t seen = round_id.load(std::memory_order_acquire);
+                started_remote.fetch_add(1, std::memory_order_acq_rel);
+                std::vector<uint8_t> payload;
+                while (!done.load(std::memory_order_acquire)) {
+                    while (round_id.load(std::memory_order_acquire) == seen && !done.load(std::memory_order_acquire)) {
+                        std::this_thread::yield();
+                    }
+                    if (done.load(std::memory_order_acquire)) {
+                        break;
+                    }
+                    seen = round_id.load(std::memory_order_acquire);
+                    size_t idx = size_index.load(std::memory_order_acquire);
+                    if (idx >= sizes.size()) {
+                        break;
+                    }
+                    size_t msg_bytes = sizes[idx];
+                    payload.assign(msg_bytes, Transport::remote_fill());
+                    for (int r = 0; r < rounds; ++r) {
+                        Transport::send(push, payload.data(), payload.size());
+                    }
+                }
+            });
+        }
 
-    if (!done.load(std::memory_order_acquire)) {
+        start_remote.store(true, std::memory_order_release);
+        while (started_remote.load(std::memory_order_acquire) < num_remote_senders) {
+            std::this_thread::yield();
+        }
+
         send_u32(ctrl_fd, kControlAck);
     }
 
@@ -527,21 +631,53 @@ void run_fanin_all(bool isServer,
     Context ctx = Transport::create_context();
 
     if (isServer) {
-        auto pull = Transport::make_pull(ctx);
-        run_local_fanin<Transport>(ctx, pull, listen_ip, port, num_local_senders, sizes, rounds, repeats, warmup, csv);
+        // Run local fan-in for both semantics
+        {
+            auto pull = Transport::make_pull(ctx);
+            run_local_fanin<Transport>(ctx, pull, listen_ip, port, num_local_senders, sizes, rounds, repeats, warmup, csv, Semantics::SenderBind_ReceiverConnect);
+        }
+        {
+            auto pull = Transport::make_pull(ctx);
+            run_local_fanin<Transport>(ctx, pull, listen_ip, port, num_local_senders, sizes, rounds, repeats, warmup, csv, Semantics::SenderConnect_ReceiverBind);
+        }
+        // Run remote fan-in for both semantics (separate control sessions)
         if (num_remote_senders > 0) {
-            int ctrl_fd = open_control_listener(server_ip.c_str(), port + 1);
-            if (ctrl_fd >= 0) {
-                run_remote_server<Transport>(pull, ctrl_fd, num_remote_senders, sizes, rounds, repeats, warmup, csv);
-                close(ctrl_fd);
+            // SenderBind/ReceiverConnect
+            {
+                auto pull = Transport::make_pull(ctx);
+                int ctrl_fd = open_control_listener(server_ip.c_str(), port + 1);
+                if (ctrl_fd >= 0) {
+                    run_remote_server<Transport>(pull, ctrl_fd, num_remote_senders, sizes, rounds, repeats, warmup, csv, Semantics::SenderBind_ReceiverConnect, server_ip, port);
+                    close(ctrl_fd);
+                }
+            }
+            // SenderConnect/ReceiverBind
+            {
+                auto pull = Transport::make_pull(ctx);
+                int ctrl_fd = open_control_listener(server_ip.c_str(), port + 1);
+                if (ctrl_fd >= 0) {
+                    run_remote_server<Transport>(pull, ctrl_fd, num_remote_senders, sizes, rounds, repeats, warmup, csv, Semantics::SenderConnect_ReceiverBind, server_ip, port);
+                    close(ctrl_fd);
+                }
             }
         }
     } else {
         if (num_remote_senders > 0) {
-            int ctrl_fd = open_control_client(server_ip.c_str(), port + 1);
-            if (ctrl_fd >= 0) {
-                run_remote_client<Transport>(ctx, listen_ip, port, ctrl_fd, num_remote_senders, sizes, rounds);
-                close(ctrl_fd);
+            // SenderBind/ReceiverConnect
+            {
+                int ctrl_fd = open_control_client(server_ip.c_str(), port + 1);
+                if (ctrl_fd >= 0) {
+                    run_remote_client<Transport>(ctx, listen_ip, port, ctrl_fd, num_remote_senders, sizes, rounds, Semantics::SenderBind_ReceiverConnect);
+                    close(ctrl_fd);
+                }
+            }
+            // SenderConnect/ReceiverBind
+            {
+                int ctrl_fd = open_control_client(server_ip.c_str(), port + 1);
+                if (ctrl_fd >= 0) {
+                    run_remote_client<Transport>(ctx, listen_ip, port, ctrl_fd, num_remote_senders, sizes, rounds, Semantics::SenderConnect_ReceiverBind);
+                    close(ctrl_fd);
+                }
             }
         }
     }
@@ -552,8 +688,9 @@ void run_fanin_all(bool isServer,
 int main(int argc, char** argv) {
     auto print_usage = [] {
         std::cerr << "Usage:\n"
-                  << "  ucxq_example server [bind_ip] [port] [local_threads] [remote_threads]\n"
-                  << "  ucxq_example client <server_ip> <advertise_ip> [port] [remote_threads]\n";
+                  << "  ucxq_example server\n"
+                  << "  ucxq_example client\n"
+                  << "\nFixed config: server=10.10.2.1, client=10.10.2.2, port=62000, threads=16/16\n";
     };
 
     if (argc < 2) {
@@ -568,34 +705,12 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    int port = 61000;
-    size_t local_threads = 16;
-    size_t remote_threads = 16;
-    std::string server_ip;
-    std::string advertise_ip;
-
-    try {
-        if (isServer) {
-            server_ip = (argc >= 3) ? argv[2] : "127.0.0.1";
-            advertise_ip = server_ip;
-            if (argc >= 4) port = std::stoi(argv[3]);
-            if (argc >= 5) local_threads = static_cast<size_t>(std::stoul(argv[4]));
-            if (argc >= 6) remote_threads = static_cast<size_t>(std::stoul(argv[5]));
-        } else {
-            if (argc < 4) {
-                print_usage();
-                return 1;
-            }
-            server_ip = argv[2];
-            advertise_ip = argv[3];
-            if (argc >= 5) port = std::stoi(argv[4]);
-            if (argc >= 6) remote_threads = static_cast<size_t>(std::stoul(argv[5]));
-            local_threads = 0; // client process hosts only remote senders
-        }
-    } catch (const std::exception& ex) {
-        std::cerr << "Invalid argument: " << ex.what() << std::endl;
-        return 1;
-    }
+    const int port = 62000;
+    const size_t remote_threads = 16;
+    const std::string server_ip = "10.10.2.1";
+    const std::string client_ip = "10.10.2.2";
+    const std::string advertise_ip = isServer ? server_ip : client_ip;
+    const size_t local_threads = isServer ? 16 : 0; // client hosts only remote senders
 
     const std::vector<size_t> sizes = {4096, 8192, 65536, 131072, 1048576};
     int rounds = 20;

@@ -25,16 +25,24 @@ This produces the `ucxpp_lib` library and the `ucxq_example` benchmark binary. R
 Example
 
 ```bash
-# Receiver machine (binds locally at 10.10.2.1, 16 local + 16 remote senders)
-./ucx-push-pull/build/ucxq_example server 10.10.2.1 61000 16 16
+# Fixed network topology:
+# - Server IP: 10.10.2.1
+# - Client IP: 10.10.2.2 (advertised to server)
+# - Port: 62000 (control uses 62001)
+# - Threads: 16 local on server, 16 remote on client
 
-# Sender machine (advertises 10.10.2.2 so the receiver can connect back)
-./ucx-push-pull/build/ucxq_example client 10.10.2.1 10.10.2.2 61000 16
+# On the server node (10.10.2.1):
+./ucx-push-pull/build/ucxq_example server
+
+# On the client node (10.10.2.2):
+./ucx-push-pull/build/ucxq_example client
 ```
 
 Notes
 
+- The benchmark now runs both semantics automatically and records CSV labels:
+  - UCXQ_local_sb_rc, UCXQ_local_sc_rb, UCXQ_remote_sb_rc, UCXQ_remote_sc_rb
 - Sender-side bind swaps the out-of-band handshake roles vs. the original ucx-zmq variant.
 - Multipart framing is unchanged and remains compatible with the fan-in queue implementation.
 - Single-frame send/recv still maps directly to the queue for the low-latency tensor path.
-- The sample benchmark defaults to 16 local and 16 remote senders; override the optional CLI arguments if you need a different topology.
+- The sample benchmark is fixed to 16 local and 16 remote senders and the IPs above.

@@ -13,13 +13,6 @@
 namespace ucxq {
 
 namespace {
-// Wire framing for multipart messages:
-// [uint32_t magic = kMultipartMagic]
-// [uint32_t num_frames]
-//   repeat num_frames times:
-//     [uint32_t frame_len][frame_bytes]
-// For single-frame send/recv() path we just send a single frame directly
-// to avoid extra copy, aligning with tensor fast path.
 
 static void append_u32(std::vector<uint8_t>& v, uint32_t x) {
     uint32_t be = htonl(x);
@@ -71,43 +64,116 @@ FanInQueueReceiver::FanInQueueReceiver(const std::string& ip, int tcp_port)
 
 FanInQueueReceiver::~FanInQueueReceiver() { stop(); }
 
-void FanInQueueReceiver::start() { connect_sender(ip_, tcp_port_); }
-
-void FanInQueueReceiver::ensure_running() {
-    bool expected = false;
-    if (running_.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-        progress_thr_ = std::thread(&FanInQueueReceiver::progressThread, this);
-    }
+void FanInQueueReceiver::start() {
+    running_.store(true, std::memory_order_release);
+    // Start UCX worker progress thread to poll for incoming messages
+    progress_thr_ = std::thread(&FanInQueueReceiver::progressThread, this);
 }
 
-void FanInQueueReceiver::connect_sender(const std::string& ip, int tcp_port) {
-    ensure_running();
+void FanInQueueReceiver::start_server() {
+    running_.store(true, std::memory_order_release);
+    // Start UCX worker progress/recv thread first
+    progress_thr_ = std::thread(&FanInQueueReceiver::progressThread, this);
 
+    // Listen as a server for address exchange with senders
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
         throw std::runtime_error("socket failed");
     }
+    int yes = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+#ifdef SO_REUSEPORT
+    setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(yes));
+#endif
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(tcp_port_);
+    if (inet_pton(AF_INET, ip_.c_str(), &addr.sin_addr) != 1) {
+        close(fd);
+        throw std::runtime_error("inet_pton failed");
+    }
+    if (bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+        close(fd);
+        throw std::runtime_error("bind failed");
+    }
+    if (listen(fd, 128) != 0) {
+        close(fd);
+        throw std::runtime_error("listen failed");
+    }
 
-    auto fail = [&](const char* what) {
-        if (fd >= 0) {
-            close(fd);
-            fd = -1;
+    tcp_listen_fd_ = fd;
+    accept_thr_ = std::thread([this]() {
+        while (running_.load(std::memory_order_acquire)) {
+            int cfd = ::accept(tcp_listen_fd_, nullptr, nullptr);
+            if (cfd < 0) {
+                if (!running_.load(std::memory_order_acquire)) break;
+                // transient error, continue
+                std::this_thread::yield();
+                continue;
+            }
+
+            // First, receive peer UCX address length and bytes
+            uint32_t peer_len_be{};
+            if (recv(cfd, &peer_len_be, sizeof(peer_len_be), MSG_WAITALL) != static_cast<ssize_t>(sizeof(peer_len_be))) {
+                close(cfd);
+                continue;
+            }
+            uint32_t peer_len = ntohl(peer_len_be);
+            std::vector<uint8_t> peer(peer_len);
+            if (recv(cfd, peer.data(), peer.size(), MSG_WAITALL) != static_cast<ssize_t>(peer.size())) {
+                close(cfd);
+                continue;
+            }
+
+            // Then send my UCX worker address
+            ucp_address_t* my_addr{};
+            size_t my_len{};
+            if (ucp_worker_get_address(worker_, &my_addr, &my_len) != UCS_OK) {
+                close(cfd);
+                continue;
+            }
+            uint32_t len_be = htonl(static_cast<uint32_t>(my_len));
+            ::send(cfd, &len_be, sizeof(len_be), 0);
+            ::send(cfd, my_addr, my_len, 0);
+            ucp_worker_release_address(worker_, my_addr);
+
+            // Create EP
+            ucp_ep_params_t ep_params{};
+            ep_params.field_mask = UCP_EP_PARAM_FIELD_REMOTE_ADDRESS;
+            ep_params.address = reinterpret_cast<ucp_address_t*>(peer.data());
+            ucp_ep_h ep{};
+            if (ucp_ep_create(worker_, &ep_params, &ep) == UCS_OK) {
+                {
+                    std::lock_guard<std::mutex> lock(eps_mu_);
+                    eps_.push_back(ep);
+                }
+                ep_count_.fetch_add(1, std::memory_order_relaxed);
+            }
+
+            close(cfd);
         }
-        throw std::runtime_error(what);
-    };
+    });
+}
 
+void FanInQueueReceiver::add_remote(const std::string& ip, int tcp_port) {
+    // Connect to a remote sender to exchange UCX addresses and create an EP
+    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        throw std::runtime_error("socket failed");
+    }
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(tcp_port);
     if (inet_pton(AF_INET, ip.c_str(), &addr.sin_addr) != 1) {
-        fail("inet_pton failed");
+        close(fd);
+        throw std::runtime_error("inet_pton failed");
     }
-
     int attempts = 0;
     constexpr int kMaxAttempts = 200;
     while (connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
         if (++attempts >= kMaxAttempts) {
-            fail("connect failed");
+            close(fd);
+            throw std::runtime_error("connect failed");
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
@@ -115,46 +181,40 @@ void FanInQueueReceiver::connect_sender(const std::string& ip, int tcp_port) {
     ucp_address_t* my_addr{};
     size_t my_len{};
     if (ucp_worker_get_address(worker_, &my_addr, &my_len) != UCS_OK) {
-        fail("get_address failed");
+        close(fd);
+        throw std::runtime_error("get_address failed");
     }
     uint32_t len_be = htonl(static_cast<uint32_t>(my_len));
-    if (::send(fd, &len_be, sizeof(len_be), 0) != static_cast<ssize_t>(sizeof(len_be))) {
-        ucp_worker_release_address(worker_, my_addr);
-        fail("send len failed");
-    }
-    if (::send(fd, my_addr, my_len, 0) != static_cast<ssize_t>(my_len)) {
-        ucp_worker_release_address(worker_, my_addr);
-        fail("send addr failed");
-    }
+    ::send(fd, &len_be, sizeof(len_be), 0);
+    ::send(fd, my_addr, my_len, 0);
     ucp_worker_release_address(worker_, my_addr);
 
     uint32_t peer_len_be{};
     if (recv(fd, &peer_len_be, sizeof(peer_len_be), MSG_WAITALL) != static_cast<ssize_t>(sizeof(peer_len_be))) {
-        fail("recv len failed");
+        close(fd);
+        throw std::runtime_error("recv len failed");
     }
     uint32_t peer_len = ntohl(peer_len_be);
     std::vector<uint8_t> peer(peer_len);
     if (recv(fd, peer.data(), peer.size(), MSG_WAITALL) != static_cast<ssize_t>(peer.size())) {
-        fail("recv addr failed");
+        close(fd);
+        throw std::runtime_error("recv addr failed");
     }
 
     ucp_ep_params_t ep_params{};
     ep_params.field_mask = UCP_EP_PARAM_FIELD_REMOTE_ADDRESS;
     ep_params.address = reinterpret_cast<ucp_address_t*>(peer.data());
     ucp_ep_h ep{};
-    if (ucp_ep_create(worker_, &ep_params, &ep) != UCS_OK) {
-        fail("ep create failed");
+    if (ucp_ep_create(worker_, &ep_params, &ep) == UCS_OK) {
+        {
+            std::lock_guard<std::mutex> lock(eps_mu_);
+            eps_.push_back(ep);
+        }
+        ep_count_.fetch_add(1, std::memory_order_relaxed);
     }
-
-    {
-        std::lock_guard<std::mutex> lock(eps_mu_);
-        eps_.push_back(ep);
-    }
-    ep_count_.fetch_add(1, std::memory_order_relaxed);
-    if (fd >= 0) {
-        close(fd);
-    }
+    close(fd);
 }
+
 
 void FanInQueueReceiver::progressThread() {
     const uint64_t TAG = 0xABCDEF;
@@ -244,6 +304,13 @@ void FanInQueueReceiver::stop() {
     if (progress_thr_.joinable()) {
         progress_thr_.join();
     }
+    if (tcp_listen_fd_ >= 0) {
+        close(tcp_listen_fd_);
+        tcp_listen_fd_ = -1;
+    }
+    if (accept_thr_.joinable()) {
+        accept_thr_.join();
+    }
     {
         std::lock_guard<std::mutex> lock(eps_mu_);
         for (auto ep : eps_) {
@@ -292,7 +359,8 @@ FanInQueueSender::FanInQueueSender(const std::string& ip, int tcp_port)
 
 FanInQueueSender::~FanInQueueSender() { stop(); }
 
-void FanInQueueSender::start() {
+void FanInQueueSender::start_server() {
+    // Listen as a server for address exchange
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
         throw std::runtime_error("socket failed");
@@ -313,77 +381,124 @@ void FanInQueueSender::start() {
         close(fd);
         throw std::runtime_error("bind failed");
     }
-    if (listen(fd, 1) != 0) {
+    if (listen(fd, 128) != 0) {
         close(fd);
         throw std::runtime_error("listen failed");
     }
-    tcp_listen_fd_ = fd;
 
-    int cfd = -1;
-    auto fail = [&](const char* what) {
-        if (cfd >= 0) {
-            close(cfd);
-            cfd = -1;
-        }
-        if (tcp_listen_fd_ >= 0) {
-            shutdown(tcp_listen_fd_, SHUT_RDWR);
-            close(tcp_listen_fd_);
-            tcp_listen_fd_ = -1;
-        }
-        throw std::runtime_error(what);
-    };
-
-    cfd = ::accept(tcp_listen_fd_, nullptr, nullptr);
+    int cfd = ::accept(fd, nullptr, nullptr);
     if (cfd < 0) {
-        fail("accept failed");
+        close(fd);
+        throw std::runtime_error("accept failed");
     }
 
+    // First, receive peer UCX address length and bytes
     uint32_t peer_len_be{};
     if (recv(cfd, &peer_len_be, sizeof(peer_len_be), MSG_WAITALL) != static_cast<ssize_t>(sizeof(peer_len_be))) {
-        fail("recv len failed");
+        close(cfd);
+        close(fd);
+        throw std::runtime_error("recv len failed");
     }
     uint32_t peer_len = ntohl(peer_len_be);
     std::vector<uint8_t> peer(peer_len);
     if (recv(cfd, peer.data(), peer.size(), MSG_WAITALL) != static_cast<ssize_t>(peer.size())) {
-        fail("recv addr failed");
+        close(cfd);
+        close(fd);
+        throw std::runtime_error("recv addr failed");
     }
 
+    // Then send my UCX worker address
     ucp_address_t* my_addr{};
     size_t my_len{};
     if (ucp_worker_get_address(worker_, &my_addr, &my_len) != UCS_OK) {
-        fail("get_address failed");
+        close(cfd);
+        close(fd);
+        throw std::runtime_error("get_address failed");
     }
-    bool addr_released = false;
-    auto release_addr = [&]() {
-        if (!addr_released && my_addr != nullptr) {
-            ucp_worker_release_address(worker_, my_addr);
-            addr_released = true;
-        }
-    };
-
     uint32_t len_be = htonl(static_cast<uint32_t>(my_len));
-    if (::send(cfd, &len_be, sizeof(len_be), 0) != static_cast<ssize_t>(sizeof(len_be))) {
-        release_addr();
-        fail("send len failed");
+    ::send(cfd, &len_be, sizeof(len_be), 0);
+    ::send(cfd, my_addr, my_len, 0);
+    ucp_worker_release_address(worker_, my_addr);
+
+    // Create EP
+    ucp_ep_params_t ep_params{};
+    ep_params.field_mask = UCP_EP_PARAM_FIELD_REMOTE_ADDRESS;
+    ep_params.address = reinterpret_cast<ucp_address_t*>(peer.data());
+    if (ucp_ep_create(worker_, &ep_params, &ep_) != UCS_OK) {
+        close(cfd);
+        close(fd);
+        throw std::runtime_error("ep create failed");
     }
-    if (::send(cfd, my_addr, my_len, 0) != static_cast<ssize_t>(my_len)) {
-        release_addr();
-        fail("send addr failed");
+    close(cfd);
+    close(fd);
+}
+
+void FanInQueueSender::add_remote(const std::string& ip, int tcp_port) {
+    if (ep_ != nullptr) {
+        return;
     }
-    release_addr();
+    // Connect as a client to the receiver server for UCX address exchange
+    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        throw std::runtime_error("socket failed");
+    }
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(tcp_port);
+    if (inet_pton(AF_INET, ip.c_str(), &addr.sin_addr) != 1) {
+        close(fd);
+        throw std::runtime_error("inet_pton failed");
+    }
+    int attempts = 0;
+    constexpr int kMaxAttempts = 200;
+    while (connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+        if (++attempts >= kMaxAttempts) {
+            close(fd);
+            throw std::runtime_error("connect failed");
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    // Send my UCX worker address, then receive peer's, and create an endpoint
+    ucp_address_t* my_addr{};
+    size_t my_len{};
+    if (ucp_worker_get_address(worker_, &my_addr, &my_len) != UCS_OK) {
+        close(fd);
+        throw std::runtime_error("get_address failed");
+    }
+    uint32_t len_be = htonl(static_cast<uint32_t>(my_len));
+    if (::send(fd, &len_be, sizeof(len_be), 0) != static_cast<ssize_t>(sizeof(len_be))) {
+        ucp_worker_release_address(worker_, my_addr);
+        close(fd);
+        throw std::runtime_error("send len failed");
+    }
+    if (::send(fd, my_addr, my_len, 0) != static_cast<ssize_t>(my_len)) {
+        ucp_worker_release_address(worker_, my_addr);
+        close(fd);
+        throw std::runtime_error("send addr failed");
+    }
+    ucp_worker_release_address(worker_, my_addr);
+
+    uint32_t peer_len_be{};
+    if (recv(fd, &peer_len_be, sizeof(peer_len_be), MSG_WAITALL) != static_cast<ssize_t>(sizeof(peer_len_be))) {
+        close(fd);
+        throw std::runtime_error("recv len failed");
+    }
+    uint32_t peer_len = ntohl(peer_len_be);
+    std::vector<uint8_t> peer(peer_len);
+    if (recv(fd, peer.data(), peer.size(), MSG_WAITALL) != static_cast<ssize_t>(peer.size())) {
+        close(fd);
+        throw std::runtime_error("recv addr failed");
+    }
 
     ucp_ep_params_t ep_params{};
     ep_params.field_mask = UCP_EP_PARAM_FIELD_REMOTE_ADDRESS;
     ep_params.address = reinterpret_cast<ucp_address_t*>(peer.data());
     if (ucp_ep_create(worker_, &ep_params, &ep_) != UCS_OK) {
-        fail("ep create failed");
+        close(fd);
+        throw std::runtime_error("ep create failed");
     }
-
-    close(cfd);
-    cfd = -1;
-    shutdown(tcp_listen_fd_, SHUT_RDWR);
-    close(tcp_listen_fd_);
-    tcp_listen_fd_ = -1;
+    close(fd);
 }
 
 void FanInQueueSender::send(const void* buf, size_t len, uint64_t tag) {
@@ -415,11 +530,6 @@ void FanInQueueSender::waitReq(void* req) {
 }
 
 void FanInQueueSender::stop() {
-    if (tcp_listen_fd_ >= 0) {
-        shutdown(tcp_listen_fd_, SHUT_RDWR);
-        close(tcp_listen_fd_);
-        tcp_listen_fd_ = -1;
-    }
     if (ep_ != nullptr) {
         ucp_request_param_t param{};
         param.op_attr_mask = UCP_OP_ATTR_FIELD_FLAGS;
@@ -456,11 +566,15 @@ socket_t::~socket_t() {
 
 void socket_t::parse_tcp_endpoint(const std::string& endpoint, std::string& ip, int& port) {
     // Expect format tcp://IP:PORT
-    const std::string prefix = "tcp://";
-    if (endpoint.rfind(prefix, 0) != 0) {
-        throw std::invalid_argument("Only tcp:// endpoints are supported");
+    const auto scheme_pos = endpoint.find("://");
+    if (scheme_pos == std::string::npos) {
+        throw std::invalid_argument("Endpoint must contain scheme://");
     }
-    auto rest = endpoint.substr(prefix.size());
+    const std::string scheme = endpoint.substr(0, scheme_pos);
+    if (scheme != "tcp" && scheme != "ucx") {
+        throw std::invalid_argument("Only tcp:// or ucx:// endpoints are supported");
+    }
+    auto rest = endpoint.substr(scheme_pos + 3);
     auto colon = rest.find(":");
     if (colon == std::string::npos) {
         throw std::invalid_argument("Endpoint must be tcp://IP:PORT");
@@ -469,33 +583,49 @@ void socket_t::parse_tcp_endpoint(const std::string& endpoint, std::string& ip, 
     port = std::stoi(rest.substr(colon + 1));
 }
 
-// Bind the push socket with TCP endpoint for address exchange,
-// making the sender listen for receivers
+// Bind for senders (push). Sender listens for receiver connects to exchange addresses
 void socket_t::bind(const std::string& endpoint) {
-    if (type_ != socket_type::push) {
-        throw std::logic_error("bind() only valid for push sockets");
+    if (mode_ != init_mode::none) {
+        throw std::logic_error("socket already initialized (bind/connect)");
     }
     std::string ip; int port = 0;
     parse_tcp_endpoint(endpoint, ip, port);
-    sender_ = std::make_unique<ucxq::FanInQueueSender>(ip, port);
-    sender_->start();
+    if (type_ == socket_type::push) {
+        sender_ = std::make_unique<ucxq::FanInQueueSender>(ip, port);
+        sender_->start_server(); // sender-bind
+    } else {
+        receiver_ = std::make_unique<ucxq::FanInQueueReceiver>(ip, port);
+        receiver_->start_server(); // receiver-bind
+    }
+    mode_ = init_mode::bind;
 }
 
-// Connect the pull socket to a sender via TCP endpoint for address exchange
+// Connect for receivers (pull). Receiver connects to each sender endpoint to exchange addresses
 void socket_t::connect(const std::string& endpoint) {
-    if (type_ != socket_type::pull) {
-        throw std::logic_error("connect() only valid for pull sockets");
+    if (mode_ == init_mode::bind) {
+        throw std::logic_error("socket already initialized with bind()");
     }
     std::string ip; int port = 0;
     parse_tcp_endpoint(endpoint, ip, port);
-    if (!receiver_) {
-        receiver_ = std::make_unique<ucxq::FanInQueueReceiver>(ip, port);
+    if (type_ == socket_type::pull) {
+        if (!receiver_) {
+            receiver_ = std::make_unique<ucxq::FanInQueueReceiver>(ip, port);
+            receiver_->start();
+        }
+        receiver_->add_remote(ip, port); // receiver-connect
+    } else {
+        if (sender_ == nullptr) {
+            sender_ = std::make_unique<ucxq::FanInQueueSender>(ip, port);
+        }
+        sender_->add_remote(ip, port); // sender-connect
     }
-    receiver_->connect_sender(ip, port);
+    mode_ = init_mode::connect;
 }
 
 bool socket_t::send(buffer_view buf, send_flags::type flags) {
-    if (type_ != socket_type::push || !sender_) return false;
+    if (type_ != socket_type::push || !sender_) {
+        throw std::logic_error("either wrong socket type or sender not initialized");
+    }
 
     auto append_frame = [&](buffer_view frame) {
         append_u32(multipart_staging_, static_cast<uint32_t>(frame.size));
@@ -534,7 +664,9 @@ bool socket_t::send(buffer_view buf, send_flags::type flags) {
 }
 
 recv_result_t socket_t::recv(message_t& msg) {
-    if (type_ != socket_type::pull || !receiver_) return std::nullopt;
+    if (type_ != socket_type::pull || !receiver_) {
+        throw std::logic_error("either wrong socket type or receiver queue not initialized");
+    }
     ucxq::Message m;
     if (!receiver_->dequeue(m)) return std::nullopt;
 
@@ -545,7 +677,9 @@ recv_result_t socket_t::recv(message_t& msg) {
 }
 
 recv_result_t socket_t::recv_multipart(std::vector<message_t>& out_frames) {
-    if (type_ != socket_type::pull || !receiver_) return std::nullopt;
+    if (type_ != socket_type::pull || !receiver_) {
+        throw std::logic_error("either wrong socket type or receiver queue not initialized");
+    }
     ucxq::Message m;
     if (!receiver_->dequeue(m)) return std::nullopt;
 

@@ -104,18 +104,21 @@ public:
     ~FanInQueueReceiver();
 
     void start();
-    void connect_sender(const std::string& ip, int tcp_port);
+    // Start a TCP server to accept UCX address exchanges from remote senders
+    void start_server();
+    // Add another remote sender endpoint to this receiver (fan-in)
+    void add_remote(const std::string& ip, int tcp_port);
     bool dequeue(Message& out);
     size_t endpoint_count() const;
     void stop();
 
 private:
-    void ensure_running();
     void progressThread();
     static void onRecvCallback(void* request, ucs_status_t status, const ucp_tag_recv_info_t* info, void* user_data);
 
     int tcp_port_ = 0;
     std::string ip_;
+    int tcp_listen_fd_ = -1;
 
     ucp_context_h context_ = nullptr;
     ucp_worker_h worker_ = nullptr;
@@ -125,6 +128,7 @@ private:
     std::mutex eps_mu_;
 
     std::thread progress_thr_;
+    std::thread accept_thr_;
     std::atomic<bool> running_{false};
 
     SpscRing<Message> q_{1024};
@@ -135,7 +139,10 @@ public:
     FanInQueueSender(const std::string& ip, int tcp_port);
     ~FanInQueueSender();
 
-    void start();
+    // Start a TCP server for receiver-connect/sender-bind semantics
+    void start_server();
+    // Connect to a receiver that is listening (receiver-bind / sender-connect)
+    void add_remote(const std::string& ip, int tcp_port);
     void send(const void* buf, size_t len, uint64_t tag = 0xABCDEF);
     size_t endpoint_count() const;
     void stop();
@@ -186,9 +193,11 @@ private:
     uint32_t multipart_frame_count_ = 0;
 
     socket_type type_;
+    enum class init_mode { none, bind, connect };
+    init_mode mode_ = init_mode::none; // guard: allow only one of bind() or connect()
     // UCX queue components
-    std::unique_ptr<ucxq::FanInQueueReceiver> receiver_;
-    std::unique_ptr<ucxq::FanInQueueSender> sender_;
+    std::unique_ptr<FanInQueueReceiver> receiver_;
+    std::unique_ptr<FanInQueueSender> sender_;
 };
 
 } // namespace ucxq
