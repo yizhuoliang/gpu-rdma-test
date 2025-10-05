@@ -109,11 +109,8 @@ int open_control_listener(const char* ip, int port) {
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
-    if (inet_pton(AF_INET, ip, &addr.sin_addr) != 1) {
-        std::cerr << "inet_pton failed for " << ip << std::endl;
-        close(lfd);
-        return -1;
-    }
+    // Bind on all interfaces to avoid NIC/IP mismatches
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
     if (bind(lfd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
         std::cerr << "bind() failed: " << std::strerror(errno) << std::endl;
         close(lfd);
