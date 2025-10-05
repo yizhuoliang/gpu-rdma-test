@@ -156,6 +156,45 @@ int open_control_client(const char* ip, int port) {
     return fd;
 }
 
+// Start control listener immediately (non-blocking accept). Returns listening fd.
+int start_control_listener_any(int port) {
+    int lfd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (lfd < 0) {
+        std::cerr << "socket() failed: " << std::strerror(errno) << std::endl;
+        return -1;
+    }
+    int yes = 1;
+    setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+#ifdef SO_REUSEPORT
+    setsockopt(lfd, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(yes));
+#endif
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(lfd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+        std::cerr << "bind() failed: " << std::strerror(errno) << std::endl;
+        close(lfd);
+        return -1;
+    }
+    if (listen(lfd, 1) != 0) {
+        std::cerr << "listen() failed: " << std::strerror(errno) << std::endl;
+        close(lfd);
+        return -1;
+    }
+    std::cout << "Control listening on 0.0.0.0:" << port << std::endl;
+    return lfd;
+}
+
+int accept_control(int lfd) {
+    int cfd = ::accept(lfd, nullptr, nullptr);
+    if (cfd < 0) {
+        std::cerr << "accept() failed: " << std::strerror(errno) << std::endl;
+    }
+    close(lfd);
+    return cfd;
+}
+
 // Transport traits for UCXQ
 struct UcxTransport {
     struct Context {};
@@ -628,14 +667,10 @@ void run_fanin_all(bool isServer,
     Context ctx = Transport::create_context();
 
     if (isServer) {
-        // Start first control accept (sb_rc) in background before local to avoid races
-        std::atomic<int> ctrl_fd_sb_rc{-1};
-        std::thread ctrl_thr_sb_rc;
+        // Start control listener on 62001 immediately so client can connect anytime
+        int lfd_sb_rc = -1;
         if (num_remote_senders > 0) {
-            ctrl_thr_sb_rc = std::thread([&] {
-                int fd = open_control_listener(server_ip.c_str(), port + 1);
-                ctrl_fd_sb_rc.store(fd, std::memory_order_release);
-            });
+            lfd_sb_rc = start_control_listener_any(port + 1);
         }
 
         // Run local fan-in for both semantics
@@ -649,19 +684,16 @@ void run_fanin_all(bool isServer,
         }
         // Run remote fan-in for both semantics
         if (num_remote_senders > 0) {
-            // Wait for sb_rc control connection
-            if (ctrl_thr_sb_rc.joinable()) {
-                ctrl_thr_sb_rc.join();
-            }
-            int cfd_sb_rc = ctrl_fd_sb_rc.load(std::memory_order_acquire);
+            // Accept sb_rc
+            int cfd_sb_rc = accept_control(lfd_sb_rc);
             if (cfd_sb_rc >= 0) {
                 auto pull = Transport::make_pull(ctx);
                 run_remote_server<Transport>(pull, cfd_sb_rc, num_remote_senders, sizes, rounds, repeats, warmup, csv, Semantics::SenderBind_ReceiverConnect, server_ip, port);
                 close(cfd_sb_rc);
             }
-
-            // Now accept sc_rb control connection
-            int cfd_sc_rb = open_control_listener(server_ip.c_str(), port + 1);
+            // Listen and accept sc_rb
+            int lfd_sc_rb = start_control_listener_any(port + 1);
+            int cfd_sc_rb = accept_control(lfd_sc_rb);
             if (cfd_sc_rb >= 0) {
                 auto pull = Transport::make_pull(ctx);
                 run_remote_server<Transport>(pull, cfd_sc_rb, num_remote_senders, sizes, rounds, repeats, warmup, csv, Semantics::SenderConnect_ReceiverBind, server_ip, port);
