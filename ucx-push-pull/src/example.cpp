@@ -671,6 +671,7 @@ void run_fanin_all(bool isServer,
         int lfd_sb_rc = -1;
         if (num_remote_senders > 0) {
             lfd_sb_rc = start_control_listener_any(port + 1);
+            std::cout << "[server] sb_rc control listener started on :" << (port + 1) << std::endl;
         }
 
         // Run local fan-in for both semantics
@@ -685,16 +686,21 @@ void run_fanin_all(bool isServer,
         // Run remote fan-in for both semantics
         if (num_remote_senders > 0) {
             // Accept sb_rc
+            std::cout << "[server] waiting for sb_rc control accept..." << std::endl;
             int cfd_sb_rc = accept_control(lfd_sb_rc);
             if (cfd_sb_rc >= 0) {
+                std::cout << "[server] sb_rc control accepted" << std::endl;
                 auto pull = Transport::make_pull(ctx);
                 run_remote_server<Transport>(pull, cfd_sb_rc, num_remote_senders, sizes, rounds, repeats, warmup, csv, Semantics::SenderBind_ReceiverConnect, server_ip, port);
                 close(cfd_sb_rc);
             }
             // Listen and accept sc_rb
             int lfd_sc_rb = start_control_listener_any(port + 1);
+            std::cout << "[server] sc_rb control listener started on :" << (port + 1) << std::endl;
+            std::cout << "[server] waiting for sc_rb control accept..." << std::endl;
             int cfd_sc_rb = accept_control(lfd_sc_rb);
             if (cfd_sc_rb >= 0) {
+                std::cout << "[server] sc_rb control accepted" << std::endl;
                 auto pull = Transport::make_pull(ctx);
                 run_remote_server<Transport>(pull, cfd_sc_rb, num_remote_senders, sizes, rounds, repeats, warmup, csv, Semantics::SenderConnect_ReceiverBind, server_ip, port);
                 close(cfd_sc_rb);
@@ -703,14 +709,18 @@ void run_fanin_all(bool isServer,
     } else {
         if (num_remote_senders > 0) {
             // Establish sb_rc first
+            std::cout << "[client] connecting sb_rc control to " << server_ip << ":" << (port + 1) << std::endl;
             int ctrl_fd_sb_rc = open_control_client(server_ip.c_str(), port + 1);
             if (ctrl_fd_sb_rc >= 0) {
+                std::cout << "[client] sb_rc control connected" << std::endl;
                 run_remote_client<Transport>(ctx, listen_ip, port, ctrl_fd_sb_rc, num_remote_senders, sizes, rounds, Semantics::SenderBind_ReceiverConnect);
                 close(ctrl_fd_sb_rc);
             }
             // Then sc_rb
+            std::cout << "[client] connecting sc_rb control to " << server_ip << ":" << (port + 1) << std::endl;
             int ctrl_fd_sc_rb = open_control_client(server_ip.c_str(), port + 1);
             if (ctrl_fd_sc_rb >= 0) {
+                std::cout << "[client] sc_rb control connected" << std::endl;
                 run_remote_client<Transport>(ctx, listen_ip, port, ctrl_fd_sc_rb, num_remote_senders, sizes, rounds, Semantics::SenderConnect_ReceiverBind);
                 close(ctrl_fd_sc_rb);
             }
