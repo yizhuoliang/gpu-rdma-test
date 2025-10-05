@@ -509,11 +509,11 @@ void run_remote_client(typename Transport::Context& ctx,
             senders.emplace_back([&, sender_endpoint] {
                 auto push = Transport::make_push(ctx);
                 Transport::sender_bind(push, sender_endpoint);
+                started_remote.fetch_add(1, std::memory_order_acq_rel);
                 while (!start_remote.load(std::memory_order_acquire)) {
                     std::this_thread::yield();
                 }
                 uint64_t seen = round_id.load(std::memory_order_acquire);
-                started_remote.fetch_add(1, std::memory_order_acq_rel);
                 std::vector<uint8_t> payload;
                 while (!done.load(std::memory_order_acquire)) {
                     while (round_id.load(std::memory_order_acquire) == seen && !done.load(std::memory_order_acquire)) {
@@ -534,6 +534,11 @@ void run_remote_client(typename Transport::Context& ctx,
                     }
                 }
             });
+        }
+
+        // Wait for all senders to bind before sending endpoints to server
+        while (started_remote.load(std::memory_order_acquire) < num_remote_senders) {
+            std::this_thread::yield();
         }
 
         if (!send_u32(ctrl_fd, kControlRegister)) {
@@ -560,7 +565,7 @@ void run_remote_client(typename Transport::Context& ctx,
             return;
         }
 
-        // Do not wait for sender threads to pass accept(); acknowledge immediately so server can proceed.
+        // Signal senders to start sending
         start_remote.store(true, std::memory_order_release);
         send_u32(ctrl_fd, kControlAck);
     } else {
