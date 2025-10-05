@@ -560,14 +560,9 @@ void run_remote_client(typename Transport::Context& ctx,
             return;
         }
 
+        // Do not wait for sender threads to pass accept(); acknowledge immediately so server can proceed.
         start_remote.store(true, std::memory_order_release);
-        while (started_remote.load(std::memory_order_acquire) < num_remote_senders) {
-            std::this_thread::yield();
-        }
-
-        if (!done.load(std::memory_order_acquire)) {
-            send_u32(ctrl_fd, kControlAck);
-        }
+        send_u32(ctrl_fd, kControlAck);
     } else {
         // Wait for server to send receiver endpoint, then connect senders.
         uint32_t token = 0;
@@ -624,6 +619,7 @@ void run_remote_client(typename Transport::Context& ctx,
             std::this_thread::yield();
         }
 
+        // Immediately ack so server can begin sending size tokens.
         send_u32(ctrl_fd, kControlAck);
     }
 
