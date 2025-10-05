@@ -147,7 +147,7 @@ int open_control_client(const char* ip, int port) {
         return -1;
     }
     int attempts = 0;
-    constexpr int kMaxAttempts = 200;
+    constexpr int kMaxAttempts = 5000; // allow ample time for server to reach control listener
     while (connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
         if (++attempts >= kMaxAttempts) {
             std::cerr << "connect() failed after retries: " << std::strerror(errno) << std::endl;
@@ -631,6 +631,14 @@ void run_fanin_all(bool isServer,
     Context ctx = Transport::create_context();
 
     if (isServer) {
+        // Open control listeners up front so the client can connect without racing local benchmarks.
+        int ctrl_fd_sb_rc = -1;
+        int ctrl_fd_sc_rb = -1;
+        if (num_remote_senders > 0) {
+            ctrl_fd_sb_rc = open_control_listener(server_ip.c_str(), port + 1);
+            ctrl_fd_sc_rb = open_control_listener(server_ip.c_str(), port + 1);
+        }
+
         // Run local fan-in for both semantics
         {
             auto pull = Transport::make_pull(ctx);
@@ -640,25 +648,17 @@ void run_fanin_all(bool isServer,
             auto pull = Transport::make_pull(ctx);
             run_local_fanin<Transport>(ctx, pull, listen_ip, port, num_local_senders, sizes, rounds, repeats, warmup, csv, Semantics::SenderConnect_ReceiverBind);
         }
-        // Run remote fan-in for both semantics (separate control sessions)
+        // Run remote fan-in for both semantics using pre-opened control sockets
         if (num_remote_senders > 0) {
-            // SenderBind/ReceiverConnect
-            {
+            if (ctrl_fd_sb_rc >= 0) {
                 auto pull = Transport::make_pull(ctx);
-                int ctrl_fd = open_control_listener(server_ip.c_str(), port + 1);
-                if (ctrl_fd >= 0) {
-                    run_remote_server<Transport>(pull, ctrl_fd, num_remote_senders, sizes, rounds, repeats, warmup, csv, Semantics::SenderBind_ReceiverConnect, server_ip, port);
-                    close(ctrl_fd);
-                }
+                run_remote_server<Transport>(pull, ctrl_fd_sb_rc, num_remote_senders, sizes, rounds, repeats, warmup, csv, Semantics::SenderBind_ReceiverConnect, server_ip, port);
+                close(ctrl_fd_sb_rc);
             }
-            // SenderConnect/ReceiverBind
-            {
+            if (ctrl_fd_sc_rb >= 0) {
                 auto pull = Transport::make_pull(ctx);
-                int ctrl_fd = open_control_listener(server_ip.c_str(), port + 1);
-                if (ctrl_fd >= 0) {
-                    run_remote_server<Transport>(pull, ctrl_fd, num_remote_senders, sizes, rounds, repeats, warmup, csv, Semantics::SenderConnect_ReceiverBind, server_ip, port);
-                    close(ctrl_fd);
-                }
+                run_remote_server<Transport>(pull, ctrl_fd_sc_rb, num_remote_senders, sizes, rounds, repeats, warmup, csv, Semantics::SenderConnect_ReceiverBind, server_ip, port);
+                close(ctrl_fd_sc_rb);
             }
         }
     } else {
