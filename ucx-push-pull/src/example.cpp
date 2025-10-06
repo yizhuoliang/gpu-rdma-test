@@ -443,15 +443,15 @@ void run_remote_server(typename Transport::PullSocket& pull,
             remote_endpoints[i] = std::move(endpoint);
             std::cout << "[server] received endpoint: " << endpoint << std::endl;
         }
+        if (!recv_u32(ctrl_fd, ack)) {
+            std::cerr << "Failed to receive remote ready ack" << std::endl;
+            return;
+        }
         for (const auto& ep : remote_endpoints) {
             std::cout << "[server] connecting to: " << ep << std::endl;
             Transport::receiver_connect(pull, ep);
             std::cout << "[server] connected to: " << ep << std::endl;
         }
-            if (!recv_u32(ctrl_fd, ack)) {
-                std::cerr << "Failed to receive remote ready ack" << std::endl;
-                return;
-            }
         } else {
             ack = token;
         }
