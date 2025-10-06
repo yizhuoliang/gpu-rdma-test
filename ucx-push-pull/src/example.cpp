@@ -304,9 +304,13 @@ void run_local_fanin(typename Transport::Context& ctx,
         workers.emplace_back([&, ep] {
             auto push = Transport::make_push(ctx);
             if (semantics == Semantics::SenderBind_ReceiverConnect) {
+                std::cout << "[local] sender_bind begin " << ep << std::endl;
                 Transport::sender_bind(push, ep);
+                std::cout << "[local] sender_bind end   " << ep << std::endl;
             } else {
+                std::cout << "[local] sender_connect begin " << ep << std::endl;
                 Transport::sender_connect(push, ep);
+                std::cout << "[local] sender_connect end   " << ep << std::endl;
             }
             while (!start_local.load(std::memory_order_acquire)) {
                 std::this_thread::yield();
@@ -336,16 +340,22 @@ void run_local_fanin(typename Transport::Context& ctx,
 
     if (semantics == Semantics::SenderBind_ReceiverConnect) {
         for (const auto& ep : sender_endpoints) {
+            std::cout << "[local] receiver_connect begin " << ep << std::endl;
             Transport::receiver_connect(pull, ep);
+            std::cout << "[local] receiver_connect end   " << ep << std::endl;
         }
     } else {
+        std::cout << "[local] receiver_bind begin " << receiver_endpoint << std::endl;
         Transport::receiver_bind(pull, receiver_endpoint);
+        std::cout << "[local] receiver_bind end   " << receiver_endpoint << std::endl;
     }
 
     start_local.store(true, std::memory_order_release);
+    std::cout << "[local] waiting for " << num_local_senders << " local senders to start..." << std::endl;
     while (started_local.load(std::memory_order_acquire) < num_local_senders) {
         std::this_thread::yield();
     }
+    std::cout << "[local] all local senders started" << std::endl;
 
     typename Transport::Message msg;
     std::string label = std::string(Transport::prefix()) + "_local_" + semantics_str(semantics);
@@ -357,6 +367,9 @@ void run_local_fanin(typename Transport::Context& ctx,
             auto t0 = clock_type::now();
             size_t got = 0;
             while (got < expected) {
+                if ((got % 64) == 0) {
+                    std::cout << "[local] receiving progress got=" << got << "/" << expected << std::endl;
+                }
                 size_t bytes = Transport::recv(pull, msg);
                 if (bytes > 0) {
                     ++got;
