@@ -37,57 +37,69 @@ constexpr uint32_t kControlTerminate = 0xFFFFFFFFu;
 constexpr int kSenderPortOffset = 2;
 
 bool send_u32(int fd, uint32_t value) {
+    std::cout << "[ctrl] send_u32 begin value=" << std::hex << value << std::dec << std::endl;
     uint32_t be = htonl(value);
     const uint8_t* ptr = reinterpret_cast<const uint8_t*>(&be);
     size_t sent = 0;
     while (sent < sizeof(be)) {
         ssize_t rc = ::send(fd, ptr + sent, sizeof(be) - sent, 0);
         if (rc <= 0) {
+            std::cerr << "[ctrl] send_u32 error: " << std::strerror(errno) << std::endl;
             return false;
         }
         sent += static_cast<size_t>(rc);
     }
+    std::cout << "[ctrl] send_u32 end" << std::endl;
     return true;
 }
 
 bool recv_u32(int fd, uint32_t& value) {
+    std::cout << "[ctrl] recv_u32 begin" << std::endl;
     uint32_t be = 0;
     uint8_t* ptr = reinterpret_cast<uint8_t*>(&be);
     size_t received = 0;
     while (received < sizeof(be)) {
         ssize_t rc = ::recv(fd, ptr + received, sizeof(be) - received, 0);
         if (rc <= 0) {
+            std::cerr << "[ctrl] recv_u32 error: " << std::strerror(errno) << std::endl;
             return false;
         }
         received += static_cast<size_t>(rc);
     }
     value = ntohl(be);
+    std::cout << "[ctrl] recv_u32 end value=" << std::hex << value << std::dec << std::endl;
     return true;
 }
 
 bool send_bytes(int fd, const void* data, size_t len) {
+    std::cout << "[ctrl] send_bytes begin len=" << len << std::endl;
     const uint8_t* ptr = static_cast<const uint8_t*>(data);
     size_t sent = 0;
     while (sent < len) {
         ssize_t rc = ::send(fd, ptr + sent, len - sent, 0);
         if (rc <= 0) {
+            std::cerr << "[ctrl] send_bytes error: " << std::strerror(errno) << std::endl;
             return false;
         }
         sent += static_cast<size_t>(rc);
     }
+    std::cout << "[ctrl] send_bytes end" << std::endl;
     return true;
 }
 
 bool recv_bytes(int fd, void* data, size_t len) {
+    std::cout << "[ctrl] recv_bytes begin len=" << len << std::endl;
     uint8_t* ptr = static_cast<uint8_t*>(data);
     size_t received = 0;
     while (received < len) {
         ssize_t rc = ::recv(fd, ptr + received, len - received, 0);
         if (rc <= 0) {
+            std::cerr << "[ctrl] recv_bytes error: " << std::strerror(errno) << std::endl;
             return false;
         }
         received += static_cast<size_t>(rc);
     }
+    std::cout << "[ctrl] recv_bytes end" << std::endl;
     return true;
 }
 
@@ -96,6 +108,7 @@ std::string make_endpoint(const std::string& ip, int port) {
 }
 
 int open_control_listener(const char* ip, int port) {
+    std::cout << "[ctrl] open_control_listener begin :" << port << std::endl;
     int lfd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (lfd < 0) {
         std::cerr << "socket() failed: " << std::strerror(errno) << std::endl;
@@ -121,15 +134,18 @@ int open_control_listener(const char* ip, int port) {
         close(lfd);
         return -1;
     }
+    std::cout << "[ctrl] open_control_listener accepting..." << std::endl;
     int cfd = ::accept(lfd, nullptr, nullptr);
     if (cfd < 0) {
         std::cerr << "accept() failed: " << std::strerror(errno) << std::endl;
     }
     close(lfd);
+    std::cout << "[ctrl] open_control_listener accepted fd=" << cfd << std::endl;
     return cfd;
 }
 
 int open_control_client(const char* ip, int port) {
+    std::cout << "[ctrl] open_control_client begin " << ip << ":" << port << std::endl;
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
         std::cerr << "socket() failed: " << std::strerror(errno) << std::endl;
@@ -153,11 +169,13 @@ int open_control_client(const char* ip, int port) {
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
+    std::cout << "[ctrl] open_control_client connected fd=" << fd << std::endl;
     return fd;
 }
 
 // Start control listener immediately (non-blocking accept). Returns listening fd.
 int start_control_listener_any(int port) {
+    std::cout << "[ctrl] start_control_listener_any :" << port << std::endl;
     int lfd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (lfd < 0) {
         std::cerr << "socket() failed: " << std::strerror(errno) << std::endl;
@@ -187,11 +205,13 @@ int start_control_listener_any(int port) {
 }
 
 int accept_control(int lfd) {
+    std::cout << "[ctrl] accept_control begin lfd=" << lfd << std::endl;
     int cfd = ::accept(lfd, nullptr, nullptr);
     if (cfd < 0) {
         std::cerr << "accept() failed: " << std::strerror(errno) << std::endl;
     }
     close(lfd);
+    std::cout << "[ctrl] accept_control end cfd=" << cfd << std::endl;
     return cfd;
 }
 
@@ -413,6 +433,7 @@ void run_remote_server(typename Transport::PullSocket& pull,
         for (const auto& ep : remote_endpoints) {
             std::cout << "[server] connecting to: " << ep << std::endl;
             Transport::receiver_connect(pull, ep);
+            std::cout << "[server] connected to: " << ep << std::endl;
         }
             if (!recv_u32(ctrl_fd, ack)) {
                 std::cerr << "Failed to receive remote ready ack" << std::endl;
@@ -457,6 +478,9 @@ void run_remote_server(typename Transport::PullSocket& pull,
             auto t0 = clock_type::now();
             size_t got = 0;
             while (got < expected) {
+                if ((got % 64) == 0) {
+                    std::cout << "[server] receiving progress got=" << got << "/" << expected << std::endl;
+                }
                 size_t bytes = Transport::recv(pull, msg);
                 if (bytes > 0) {
                     ++got;
@@ -515,6 +539,7 @@ void run_remote_client(typename Transport::Context& ctx,
                 while (!start_remote.load(std::memory_order_acquire)) {
                     std::this_thread::yield();
                 }
+                std::cout << "[client] sender thread starting send loop on " << sender_endpoint << std::endl;
                 uint64_t seen = round_id.load(std::memory_order_acquire);
                 std::vector<uint8_t> payload;
                 while (!done.load(std::memory_order_acquire)) {
